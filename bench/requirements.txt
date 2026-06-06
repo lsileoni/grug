@@ -1,0 +1,10 @@
+# Grug Bench - server + worker dependencies.
+# (cutechess-cli plays the games and SQLite ships with Python, so the list is short.)
+Flask>=3.0
+requests>=2.31
+PyYAML>=6.0
+python-chess>=1.999
+# production WSGI server (see scripts/run_gunicorn.sh); harmless to install elsewhere
+gunicorn>=21.2
+# dev / tests
+pytest>=8.0

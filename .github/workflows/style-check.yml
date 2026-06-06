@@ -1,0 +1,67 @@
+name: style-check
+
+# Enforces the repository .clang-format style on every PR to main and blocks
+# the merge if any C source or header is mis-formatted. Path-gated so non-source
+# PRs pass cleanly while still being a valid required status check.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: style-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'Makefile'
+              - 'CMakeLists.txt'
+              - 'build.ps1'
+              - '.clang-format'
+
+  style-check:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Skip (no source changes)
+        if: needs.changes.outputs.source != 'true'
+        run: echo "No engine source changed; style-check not required."
+
+      - name: Checkout
+        if: needs.changes.outputs.source == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+          clang-format --version
+
+      - name: Check formatting
+        if: needs.changes.outputs.source == 'true'
+        # Mirrors `make style-check`: a dry run that fails on the first deviation.
+        run: make GRUG_IN_CONTAINER=1 style-check
+
+      - name: Show required diff on failure
+        if: failure() && needs.changes.outputs.source == 'true'
+        run: |
+          echo "::group::clang-format diff (run 'make format' locally to fix)"
+          make GRUG_IN_CONTAINER=1 format
+          git --no-pager diff || true
+          echo "::endgroup::"

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Test #{{ test.id }} · Grug Bench{% endblock %}
+{% block body %}
+<div style="display:flex;align-items:center;gap:12px">
+  <h1 style="margin:0">Test #{{ test.id }}</h1>
+  <span class="tag {{ test.type }}">{{ test.type }}</span>
+  <span class="status {{ test.status }}" data-f="status">{{ test.status }}</span>
+  {% if test.result %}<span class="result {{ test.result }}" data-f="result">· {{ test.result }}</span>{% endif %}
+  <div class="spacer" style="flex:1"></div>
+  <a class="btn secondary" href="{{ url_for('games_page', test_id=test.id) }}">Games</a>
+  {% if is_admin %}<button class="btn danger" id="stopBtn" {% if test.status not in ['active','pending'] %}style="display:none"{% endif %}>Stop</button>{% endif %}
+</div>
+{% if test.note %}<p class="muted">{{ test.note }}</p>{% endif %}
+
+<div class="cards" style="margin-top:14px">
+  {% if test.type == 'sprt' %}
+  <div class="card">
+    <div class="label">LLR</div>
+    <div class="value" data-f="llr">{{ '%.2f'|format(test.llr) }}</div>
+    <div class="sub">bounds [{{ '%.2f'|format(test.llr_lower) }}, {{ '%.2f'|format(test.llr_upper) }}]</div>
+  </div>
+  {% endif %}
+  <div class="card">
+    <div class="label">Elo</div>
+    <div class="value" data-f="elo">{{ '%+.1f'|format(test.elo) }}</div>
+    <div class="sub" data-f="elorange">95% CI [{{ '%+.1f'|format(test.elo_lo) }}, {{ '%+.1f'|format(test.elo_hi) }}]</div>
+  </div>
+  <div class="card">
+    <div class="label">LOS</div>
+    <div class="value" data-f="los">{{ '%.1f'|format(test.los * 100) }}%</div>
+    <div class="sub">P(elo &gt; 0)</div>
+  </div>
+  <div class="card">
+    <div class="label">Games</div>
+    <div class="value" data-f="games">{{ test.games }}</div>
+    <div class="sub"><span data-f="wdl">{{ test.w }} W · {{ test.d }} D · {{ test.l }} L</span></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0">Progress</h2>
+  <div class="bar" style="height:12px"><span data-f="progress" style="width:{{ test.progress }}%"></span></div>
+  <h2>Pentanomial (pairs)</h2>
+  <div class="penta" data-f="penta">
+    <div><b>{{ test.penta[0] }}</b><small>0–2 (LL)</small></div>
+    <div><b>{{ test.penta[1] }}</b><small>½</small></div>
+    <div><b>{{ test.penta[2] }}</b><small>1 (draw)</small></div>
+    <div><b>{{ test.penta[3] }}</b><small>1½</small></div>
+    <div><b>{{ test.penta[4] }}</b><small>2 (WW)</small></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2 style="margin-top:0">Configuration</h2>
+  <div class="kv">
+    <div class="k">Engine</div><div class="mono">{{ test.engine }}</div>
+    {% if test.type == 'sprt' %}
+    <div class="k">Dev (engine A)</div><div class="mono">{{ test.dev_ref }} @ {{ test.dev_sha[:10] }}</div>
+    <div class="k">Dev options</div><div class="mono">{{ test.dev_options }}</div>
+    <div class="k">Base (engine B)</div><div class="mono">{{ test.base_ref }} @ {{ test.base_sha[:10] }}</div>
+    <div class="k">Base options</div><div class="mono">{{ test.base_options }}</div>
+    <div class="k">SPRT bounds</div><div class="mono">elo0={{ test.elo0 }} elo1={{ test.elo1 }} α={{ test.alpha }} β={{ test.beta }}</div>
+    {% elif test.type == 'selftest' %}
+    <div class="k">Engine A</div><div class="mono">{{ test.dev_ref }} @ {{ test.dev_sha[:10] }} {{ test.dev_options }}</div>
+    <div class="k">Engine B</div><div class="mono">{{ test.base_ref }} @ {{ test.base_sha[:10] }} {{ test.base_options }}</div>
+    {% else %}
+    <div class="k">Build (engine A)</div><div class="mono">{{ test.dev_ref }} @ {{ test.dev_sha[:10] }}</div>
+    <div class="k">Build options</div><div class="mono">{{ test.dev_options }}</div>
+    <div class="k">Reference (engine B)</div><div class="mono">{{ test.reference }} {{ test.ref_options }}</div>
+    {% endif %}
+    <div class="k">Time control</div><div class="mono">{{ test.tc }}</div>
+    <div class="k">Opening book</div><div class="mono">{{ test.book }}</div>
+    <div class="k">Cap</div><div class="mono">{{ test.max_pairs or '-' }} pairs</div>
+    <div class="k">Created</div><div class="mono">{{ test.created_at }}</div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script>bench.pollTest({{ test.id }});</script>{% endblock %}

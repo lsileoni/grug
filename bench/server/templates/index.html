@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Tests</h1>
+{% if not tests %}
+  <div class="panel empty">No tests yet. <a href="{{ url_for('new_test') }}">Create one</a> to start benchmarking.</div>
+{% else %}
+<div class="panel" style="padding:0">
+<table id="tests">
+  <thead>
+    <tr>
+      <th>#</th><th>Type</th><th>Test</th><th>LLR</th><th>Elo</th>
+      <th>Games</th><th>Status</th><th style="width:120px">Progress</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in tests %}
+    <tr data-id="{{ t.id }}">
+      <td><a href="{{ url_for('test_page', test_id=t.id) }}">{{ t.id }}</a></td>
+      <td><span class="tag {{ t.type }}">{{ t.type }}</span></td>
+      <td>
+        <a href="{{ url_for('test_page', test_id=t.id) }}">
+        {% if t.type == 'sprt' %}{{ t.dev_ref }} <span class="muted">vs</span> {{ t.base_ref }}
+        {% elif t.type == 'selftest' %}{{ t.dev_ref }} <span class="muted">vs</span> {{ t.base_ref }}
+        {% else %}{{ t.dev_ref }} <span class="muted">vs</span> {{ t.reference }}{% endif %}</a>
+        {% if t.note %}<div class="muted" style="font-size:12px">{{ t.note }}</div>{% endif %}
+      </td>
+      <td class="mono" data-f="llr">{{ '%.2f'|format(t.llr) }}
+        <span class="muted">({{ '%.2f'|format(t.llr_lower) }}, {{ '%.2f'|format(t.llr_upper) }})</span></td>
+      <td class="mono" data-f="elo">{{ '%+.1f'|format(t.elo) }} ± {{ '%.1f'|format((t.elo_hi - t.elo_lo)/2) }}</td>
+      <td class="mono" data-f="games">{{ t.games }}</td>
+      <td><span class="status {{ t.status }}" data-f="status">{{ t.status }}</span>
+        {% if t.result %}<span class="result {{ t.result }}" data-f="result">· {{ t.result }}</span>{% endif %}</td>
+      <td><div class="bar"><span data-f="progress" style="width:{{ t.progress }}%"></span></div></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script>bench.pollTests();</script>{% endblock %}

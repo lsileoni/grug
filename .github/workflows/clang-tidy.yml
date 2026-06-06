@@ -1,0 +1,60 @@
+name: clang-tidy
+
+# Static analysis gate. Runs clang-tidy against the engine's own translation
+# units using the .clang-tidy config (which sets WarningsAsErrors: '*'), so any
+# finding fails the check and blocks the merge. Path-gated like the other gates.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: tidy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'CMakeLists.txt'
+              - '.clang-tidy'
+
+  clang-tidy:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Skip (no source changes)
+        if: needs.changes.outputs.source != 'true'
+        run: echo "No engine source changed; clang-tidy not required."
+
+      - name: Checkout
+        if: needs.changes.outputs.source == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install clang-tidy
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-tidy cmake build-essential
+          clang-tidy --version
+
+      - name: Run clang-tidy
+        if: needs.changes.outputs.source == 'true'
+        # `make tidy` generates the CMake compile DB and runs run-clang-tidy over
+        # the engine's own sources. The .clang-tidy file supplies the check list
+        # and -warnings-as-errors, so a nonzero exit means a real finding. This
+        # is the exact command developers run locally to reproduce the gate.
+        run: make GRUG_IN_CONTAINER=1 tidy

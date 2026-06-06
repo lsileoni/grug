@@ -1,0 +1,310 @@
+name: benchmark
+
+# Self-contained Elo benchmark of the PR's engine against its past self (the
+# base branch, "main"). Builds both commits, plays them head-to-head with
+# fastchess at a fixed node time control, and computes an Elo rating with a
+# 95% confidence interval. The job is a MERGE BLOCKER, but only fails on a
+# statistically significant *regression* (or an engine crash) -- a neutral or
+# positive result passes, since the engine playing itself is expected to be ~0.
+#
+# HYBRID: when BENCH_URL + BENCH_TOKEN secrets are configured, it ALSO kicks off
+# the richer SPRT run on the external Grug Bench server (non-blocking, for the
+# dashboard). Without those secrets the self-contained match is the source of
+# truth.
+#
+# Path-gated: only runs the match when engine source / build files change. The
+# job still ALWAYS reports a conclusion so it is a safe required status check.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # Match size and time control. nodes-based TC is deterministic and runner-
+  # independent, which is exactly what the engine supports via UCI `go nodes`.
+  TC: "nodes=200000"
+  ROUNDS: "200" # 200 paired games = 400 games total
+  CONCURRENCY: "2"
+  REGRESSION_GUARD_ELO: "-10" # fail only if PR is clearly below this
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'Makefile'
+              - 'CMakeLists.txt'
+              - 'build.ps1'
+
+  benchmark:
+    needs: changes
+    runs-on: ubuntu-latest
+    # Reject fork PRs early: building/running an untrusted head commit and
+    # posting PR comments requires same-repo provenance.
+    timeout-minutes: 120
+    # Expose bench-server secrets as job env so step `if:` conditions can test
+    # whether the optional hybrid SPRT path is configured (secrets.* is not
+    # allowed directly inside an `if:` expression).
+    env:
+      BENCH_URL: ${{ secrets.BENCH_URL }}
+      BENCH_TOKEN: ${{ secrets.BENCH_TOKEN }}
+    steps:
+      - name: Skip (no source changes)
+        if: needs.changes.outputs.source != 'true'
+        run: echo "No engine source changed; benchmark not required for this PR."
+
+      - name: Reject fork PRs
+        if: >-
+          needs.changes.outputs.source == 'true' &&
+          github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Benchmark gating runs on same-repo branches only."
+          echo "Run a manual benchmark for fork PRs before merging."
+          exit 1
+
+      - name: Checkout (full history for base build)
+        if: needs.changes.outputs.source == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install toolchain + fastchess
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc make git
+          # Build fastchess from source pinned to a tag for reproducibility.
+          # Keep this ref in sync with .devcontainer/Dockerfile (FASTCHESS_REF).
+          git clone --depth 1 --branch v1.8.1-alpha https://github.com/Disservin/fastchess.git /tmp/fastchess
+          make -C /tmp/fastchess -j"$(nproc)"
+          sudo install -m755 /tmp/fastchess/fastchess /usr/local/bin/fastchess
+          fastchess --version
+
+      - name: Detect modified algorithm
+        if: needs.changes.outputs.source == 'true'
+        id: algo
+        # Determine which algorithm this PR touched so both engines play with
+        # the same selected strategy ("the modified algorithm against itself").
+        # Falls back to the engine default when the change is not algorithm-
+        # specific (e.g. shared search/board code).
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'src/algorithms/*.c' || true)
+          algo="default"
+          if [ "${#changed[@]}" -gt 0 ]; then
+            f="${changed[0]}"
+            # The registered UCI name is the first string literal in the
+            # `const Algorithm <X> = { "name", ... }` initializer.
+            name="$(grep -ozP 'const\s+Algorithm\s+\w+\s*=\s*\{\s*"[^"]+"' "$f" \
+              | tr '\0' '\n' | grep -oE '"[^"]+"' | tail -1 | tr -d '"' || true)"
+            if [ -n "$name" ]; then
+              algo="$name"
+            fi
+            echo "Modified algorithm file: $f -> '$algo'"
+          else
+            echo "No algorithm-specific file changed; using engine default algorithm."
+          fi
+          echo "algo=$algo" >> "$GITHUB_OUTPUT"
+
+      - name: Build PR (dev) engine
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          set -euo pipefail
+          # ARCH= keeps the build portable across runner CPUs.
+          make GRUG_IN_CONTAINER=1 native ARCH= EXE=build/grug-dev
+          test -x build/grug-dev
+
+      - name: Build base (main) engine
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git worktree add /tmp/base "$BASE_SHA"
+          make -C /tmp/base GRUG_IN_CONTAINER=1 native ARCH= EXE=build/grug-base
+          cp /tmp/base/build/grug-base build/grug-base
+          test -x build/grug-base
+
+      - name: Write opening book
+        if: needs.changes.outputs.source == 'true'
+        # A small, balanced EPD book so the self-match isn't 400 identical games.
+        run: |
+          cat > /tmp/book.epd <<'EOF'
+          rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+          rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2
+          rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2
+          rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2
+          rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1
+          rnbqkbnr/pp1ppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2
+          rnbqkb1r/pppppppp/5n2/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 1 2
+          rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2
+          rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2
+          rnbqkbnr/pppp1ppp/8/4p3/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1
+          EOF
+
+      - name: Run match (dev vs base)
+        if: needs.changes.outputs.source == 'true'
+        id: match
+        run: |
+          set -euo pipefail
+          ALGO="${{ steps.algo.outputs.algo }}"
+          OPT=()
+          if [ "$ALGO" != "default" ]; then
+            OPT=("option.Algorithm=$ALGO")
+          fi
+          set +e
+          fastchess \
+            -engine name=dev cmd=build/grug-dev proto=uci "${OPT[@]}" \
+            -engine name=base cmd=build/grug-base proto=uci "${OPT[@]}" \
+            -each "$TC" \
+            -openings file=/tmp/book.epd format=epd order=random \
+            -games 2 -rounds "$ROUNDS" -repeat \
+            -concurrency "$CONCURRENCY" \
+            -draw movenumber=40 movecount=8 score=10 \
+            -resign movecount=4 score=600 twosided=true \
+            -recover \
+            -pgnout file=/tmp/games.pgn | tee /tmp/match.log
+          rc=$?
+          set -e
+          # A nonzero rc with no PGN means the harness itself failed.
+          if [ "$rc" -ne 0 ] && [ ! -s /tmp/games.pgn ]; then
+            echo "::error::Match harness failed (rc=$rc) and produced no games."
+            exit 1
+          fi
+          # Detect engine crashes/illegal moves reported by fastchess.
+          if grep -Eiq 'disconnect|terminated|stall|illegal' /tmp/match.log; then
+            echo "crashed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "crashed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute Elo rating
+        if: needs.changes.outputs.source == 'true'
+        id: elo
+        run: python3 .github/scripts/elo_report.py /tmp/games.pgn dev base
+
+      - name: Optional SPRT on external bench server (non-blocking)
+        if: >-
+          needs.changes.outputs.source == 'true' &&
+          env.BENCH_URL != '' && env.BENCH_TOKEN != ''
+        continue-on-error: true
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+          URL = os.environ["BENCH_URL"].rstrip("/")
+          TOKEN = os.environ["BENCH_TOKEN"]
+
+          def call(path, body=None):
+              req = urllib.request.Request(
+                  URL + path,
+                  data=json.dumps(body).encode() if body is not None else None,
+                  headers={"Authorization": "Bearer " + TOKEN,
+                           "Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  return json.load(resp)
+
+          tid = call("/api/tests", {
+              "engine": "grug", "type": "sprt",
+              "dev_ref": os.environ["SHA"], "base_ref": "main",
+              "elo0": -5, "elo1": 0, "tc": "nodes=200000", "max_pairs": 4000,
+          })["id"]
+          print("SPRT dashboard ->", URL + "/test/" + str(tid), flush=True)
+          # Informational only: poll briefly, then leave it running server-side.
+          for _ in range(8):
+              t = call("/api/ci/test/%d" % tid)
+              print("games=%d LLR=%+.2f elo=%+.1f %s %s" % (
+                  t["games"], t["llr"], t["elo"], t["status"], t["result"]), flush=True)
+              if t["status"] in ("finished", "stopped", "failed"):
+                  break
+              time.sleep(15)
+          PY
+
+      - name: Comment results on PR
+        if: needs.changes.outputs.source == 'true' && always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const elo = `${{ steps.elo.outputs.elo || 'n/a' }}`;
+            const eb = `${{ steps.elo.outputs.error_bar || 'n/a' }}`;
+            const games = `${{ steps.elo.outputs.games || '0' }}`;
+            const los = `${{ steps.elo.outputs.los || 'n/a' }}`;
+            const w = `${{ steps.elo.outputs.wins || '0' }}`;
+            const d = `${{ steps.elo.outputs.draws || '0' }}`;
+            const l = `${{ steps.elo.outputs.losses || '0' }}`;
+            const algo = `${{ steps.algo.outputs.algo || 'default' }}`;
+            const crashed = `${{ steps.match.outputs.crashed || 'false' }}`;
+            const body = [
+              `### Benchmark: PR engine vs \`main\` (past self)`,
+              ``,
+              `| Metric | Value |`,
+              `| --- | --- |`,
+              `| Algorithm | \`${algo}\` |`,
+              `| Games | ${games} (W:${w} D:${d} L:${l}) |`,
+              `| **Elo** | **${elo} ± ${eb}** (95% CI) |`,
+              `| LOS (PR stronger) | ${los}% |`,
+              `| Engine crash detected | ${crashed} |`,
+              ``,
+              `_Self-contained fastchess match at \`${process.env.TC || 'nodes=200000'}\`._`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const marker = '<!-- grug-benchmark -->';
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const prev = comments.data.find(c => c.body && c.body.includes(marker));
+            const full = body + '\n' + marker;
+            if (prev) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: prev.id, body: full });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: full });
+            }
+
+      - name: Gate on regression / crash
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          set -euo pipefail
+          ELO="${{ steps.elo.outputs.elo }}"
+          EB="${{ steps.elo.outputs.error_bar }}"
+          GAMES="${{ steps.elo.outputs.games }}"
+          CRASHED="${{ steps.match.outputs.crashed }}"
+          GUARD="${REGRESSION_GUARD_ELO}"
+
+          echo "Result: Elo=${ELO} +/- ${EB} over ${GAMES} games (crashed=${CRASHED})"
+
+          if [ "$CRASHED" = "true" ]; then
+            echo "::error::Engine crash / illegal move detected during the match."
+            exit 1
+          fi
+          if [ "${GAMES:-0}" -eq 0 ]; then
+            echo "::error::No completed games were produced."
+            exit 1
+          fi
+          # Fail only on a statistically significant regression: the upper bound
+          # of the 95% CI (Elo + error_bar) is still below the guard threshold.
+          UPPER=$(python3 -c "print(${ELO} + ${EB})")
+          BELOW=$(python3 -c "print(1 if (${ELO} + ${EB}) < ${GUARD} else 0)")
+          if [ "$BELOW" -eq 1 ]; then
+            echo "::error::Significant regression: CI upper bound ${UPPER} Elo < ${GUARD} Elo."
+            exit 1
+          fi
+          echo "No significant regression. Benchmark gate passed."

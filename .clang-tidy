@@ -1,0 +1,37 @@
+# Curated, C-focused clang-tidy configuration for the grug chess engine.
+#
+# The CI gate runs clang-tidy with -warnings-as-errors='*', so every check
+# enabled here is a hard merge blocker. Checks that are noisy or stylistically
+# opinionated for an established C codebase are explicitly disabled below.
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-narrowing-conversions,
+  -bugprone-switch-missing-default-case,
+  -misc-no-recursion,
+  -misc-include-cleaner,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-isolate-declaration,
+  -readability-avoid-const-params-in-decls,
+  -readability-avoid-nested-conditional-operator,
+  -readability-named-parameter,
+  -readability-else-after-return,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+
+
+# Promote every remaining diagnostic to an error so CI fails on any finding.
+WarningsAsErrors: '*'
+
+# Only analyse the engine's own headers, never system or third-party headers.
+HeaderFilterRegex: '^.*/src/.*\.h$'
+
+FormatStyle: file

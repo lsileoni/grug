@@ -1,0 +1,86 @@
+name: build
+
+# Compiles the engine on every PR to main. Path-gated: the actual build only
+# runs when engine source or build files change, but the job ALWAYS completes
+# with a conclusion so it can be a required status check without deadlocking
+# documentation-only or bench-tooling-only pull requests.
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same PR to save CI minutes.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.filter.outputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            source:
+              - 'src/**'
+              - 'Makefile'
+              - 'CMakeLists.txt'
+              - 'build.ps1'
+
+  build:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Skip (no source changes)
+        if: needs.changes.outputs.source != 'true'
+        run: echo "No engine source or build files changed; build not required."
+
+      - name: Checkout
+        if: needs.changes.outputs.source == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc make cmake mingw-w64
+
+      - name: Build native (Makefile)
+        if: needs.changes.outputs.source == 'true'
+        # Run the in-container build path directly on the runner (no Docker
+        # delegation) and disable -march=native so the binary stays portable
+        # across the heterogeneous GitHub runner fleet.
+        run: make GRUG_IN_CONTAINER=1 native ARCH=
+
+      - name: Smoke test the binary
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          set -euo pipefail
+          test -x build/grug
+          # perft is a deterministic move-generation correctness check.
+          build/grug perft 4
+          # Exercise the UCI handshake and a real search to catch runtime breaks.
+          printf 'uci\nisready\nposition startpos\ngo depth 6\nquit\n' \
+            | build/grug | tee /tmp/uci.out
+          grep -q '^uciok' /tmp/uci.out
+          grep -q '^readyok' /tmp/uci.out
+          grep -q '^bestmove ' /tmp/uci.out
+
+      - name: Build with CMake
+        if: needs.changes.outputs.source == 'true'
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cmake -j
+
+      - name: Cross-compile Windows binary
+        if: needs.changes.outputs.source == 'true'
+        run: make GRUG_IN_CONTAINER=1 windows

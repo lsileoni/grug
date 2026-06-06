@@ -1,0 +1,56 @@
+# Compiled objects and binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.pdb
+*.ilk
+grug
+grug.exe
+
+# CMake and build output
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Coverage, profiling, and test artifacts
+*.gcda
+*.gcno
+*.gcov
+*.prof
+*.profraw
+*.profdata
+.pytest_cache/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Bench local state
+bench/config.yaml
+bench/data/
+bench/tools/
+bench/*.log
+bench/SECURITY.md
+
+# Editor, shell, and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+deploy/

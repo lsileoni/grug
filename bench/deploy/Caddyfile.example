@@ -1,0 +1,26 @@
+# Example Caddyfile for Grug Bench (Caddy provisions TLS automatically).
+#   * forwards to the gunicorn server on 127.0.0.1 (scripts/run_gunicorn.sh)
+#   * optionally restricts the interactive admin UI to allow-listed source IPs
+#
+# Set `server.secure_cookies: true` in config.yaml when serving over HTTPS.
+
+bench.example.com {
+    encode gzip
+    request_body {
+        max_size 32MB        # batch submissions carry PGN payloads
+    }
+
+    # Interactive admin surface: admin token AND an allow-listed source IP.
+    # Do NOT lock /api/tests or /api/ci/* by IP - GitHub Actions calls those
+    # from changing IPs and is already gated by the admin token.
+    @admin_ui path /new /login /logout
+    handle @admin_ui {
+        @blocked not remote_ip 10.0.0.0/8 203.0.113.7/32
+        respond @blocked "Forbidden" 403
+        reverse_proxy 127.0.0.1:8000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8000
+    }
+}

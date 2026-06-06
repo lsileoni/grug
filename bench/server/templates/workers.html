@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Workers · Grug Bench{% endblock %}
+{% block body %}
+<h1>Workers</h1>
+{% if not workers %}
+  <div class="panel empty">No workers have checked in yet. Start one with <span class="mono">scripts/run_worker.sh</span>.</div>
+{% else %}
+<div class="panel" style="padding:0">
+<table>
+  <thead><tr><th>Name</th><th>Host</th><th>Cores</th><th>cutechess</th><th>stockfish</th><th>Games done</th><th>Last seen</th></tr></thead>
+  <tbody>
+  {% for w in workers %}
+    <tr>
+      <td class="mono">{{ w.name }}</td>
+      <td>{{ w.hostname }}</td>
+      <td class="mono">{{ w.cores }}</td>
+      <td><span class="dot {{ 'on' if w.has_cutechess else 'off' }}"></span>{{ 'yes' if w.has_cutechess else 'no' }}</td>
+      <td><span class="dot {{ 'on' if w.has_stockfish else 'off' }}"></span>{{ 'yes' if w.has_stockfish else 'no' }}</td>
+      <td class="mono">{{ w.games_done }}</td>
+      <td class="mono">{{ w.last_seen }} UTC</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script>setTimeout(() => location.reload(), 5000);</script>{% endblock %}
