@@ -8,10 +8,11 @@
 #include "algorithms/first_legal.h"
 #include "algorithms/no_move.h"
 #include "algorithms/square_maximization.h"
+#include "algorithms/threat_aware.h"
 
 static const Algorithm* Algorithms[] = {
-    &BasicSearchAlgorithm, &FirstLegalAlgorithm,     &NoMoveAlgorithm,
-    &E2E4Algorithm,        &FirstGeneratedAlgorithm, &SquareMaximizationAlgorithm,
+    &BasicSearchAlgorithm,    &FirstLegalAlgorithm,         &NoMoveAlgorithm,      &E2E4Algorithm,
+    &FirstGeneratedAlgorithm, &SquareMaximizationAlgorithm, &ThreatAwareAlgorithm,
 };
 
 static const size_t AlgorithmCount = sizeof Algorithms / sizeof Algorithms[0];

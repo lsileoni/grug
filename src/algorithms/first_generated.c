@@ -2,19 +2,24 @@
 
 #include <stddef.h>
 
+#include "../algohelpers.h"
 #include "../movegen.h"
 
 static bool firstGeneratedChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)limits;
+    searchResultInit(result);
 
+    // Intentionally pseudo-legal: this picks the first GENERATED move with no
+    // legality check (note generateAllMoves, not legalMoves), to contrast with
+    // first_legal. The search wrapper will reject it if it turns out illegal.
     Move moves[MAX_MOVES];
     int  n = generateAllMoves(b, moves);
-
-    result->bestMove = n > 0 ? moves[0] : NO_MOVE;
-    result->nodes = n > 0 ? 1 : 0;
-    result->hasScore = false;
-    result->score = 0;
+    if (n > 0)
+    {
+        result->bestMove = moves[0];
+        result->nodes = 1;
+    }
     return true;
 }
 

@@ -1,0 +1,100 @@
+token: "${LICHESS_TOKEN}"
+url: "https://lichess.org/"
+
+engine:
+  dir: "/lichess-bot/config/engines"
+  name: "grug"
+  working_dir: "/lichess-bot/config"
+  protocol: "uci"
+  ponder: false
+  debug: false
+
+uci_options:
+  Algorithm: "basic_search"
+
+abort_time: 30
+fake_think_time: false
+rate_limiting_delay: 100
+move_overhead: 2000
+max_takebacks_accepted: 0
+quit_after_all_games_finish: false
+
+draw_or_resign:
+  resign_enabled: false
+  offer_draw_enabled: true
+  offer_draw_score: 0
+  offer_draw_moves: 10
+  offer_draw_pieces: 10
+
+polyglot:
+  enabled: false
+  book:
+    standard: []
+
+online_moves:
+  max_out_of_book_moves: 0
+  max_retries: 1
+  chessdb_book:
+    enabled: false
+  lichess_cloud_analysis:
+    enabled: false
+  lichess_opening_explorer:
+    enabled: false
+  online_egtb:
+    enabled: false
+
+lichess_bot_tbs:
+  syzygy:
+    enabled: false
+    paths: []
+  gaviota:
+    enabled: false
+    paths: []
+
+challenge:
+  concurrency: 1
+  sort_by: "best"
+  preference: "none"
+  accept_bot: true
+  only_bot: false
+  max_increment: 20
+  min_increment: 1
+  max_base: 1800
+  min_base: 60
+  max_days: 0
+  min_days: 0
+  variants:
+    - standard
+  time_controls:
+    - bullet
+    - blitz
+    - rapid
+    - classical
+  modes:
+    - casual
+  bullet_requires_increment: true
+  max_simultaneous_games_per_user: 1
+
+greeting:
+  hello: "Hi, {opponent}. I'm {me}, running the Grug engine. Good luck."
+  goodbye: "Good game."
+  hello_spectators: "Hi. I'm {me}, running the Grug engine."
+  goodbye_spectators: "Thanks for watching."
+
+pgn_directory: "game_records"
+pgn_file_grouping: "all"
+
+matchmaking:
+  allow_matchmaking: false
+  allow_during_games: false
+  challenge_variant: "standard"
+  challenge_timeout: 30
+  challenge_initial_time:
+    - 180
+  challenge_increment:
+    - 2
+  opponent_rating_difference: 300
+  rating_preference: "none"
+  challenge_mode: "casual"
+  challenge_filter: none
+  include_challenge_block_list: false

@@ -2,15 +2,14 @@
 
 #include <stddef.h>
 
+#include "../algohelpers.h"
+
 static bool noMoveChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)b;
     (void)limits;
 
-    result->bestMove = NO_MOVE;
-    result->nodes = 0;
-    result->hasScore = false;
-    result->score = 0;
+    searchResultInit(result);
     return true;
 }
 

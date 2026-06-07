@@ -2,77 +2,38 @@
 
 #include <stddef.h>
 
-#include "../attacks.h"
-#include "../bitboard.h"
-#include "../movegen.h"
+#include "../algohelpers.h"
 
-// Counts the "mobility" squares for one colour: the union of every square its
-// pieces attack, excluding squares blocked by its own pieces. This leaves empty
-// squares plus capturable enemy squares. Derived from attack sets, so pawns
-// contribute only their diagonal attack squares (pushes are not counted).
-static int mobilityCount(const Board* b, int colour)
+// Mobility of the side that just moved, measured on the position a move leads to.
+// Handed to afterMove() as the per-move score: more reachable squares is better.
+static int moverMobility(const Board* b, void* ctx)
 {
-    Bitboard occ = boardOccupancy(b);
-    Bitboard us = b->colours[colour];
-    Bitboard covered = 0ULL;
-
-    Bitboard pawns = b->pieces[PAWN] & us;
-    while (pawns)
-        covered |= PawnAttacks[colour][poplsb(&pawns)];
-
-    for (int type = KNIGHT; type <= KING; type++)
-    {
-        Bitboard bb = b->pieces[type] & us;
-        while (bb)
-            covered |= pieceAttacks(type, poplsb(&bb), occ);
-    }
-
-    return popcount(covered & ~us);
-}
-
-static bool applyIfLegal(Board* b, Move m, Undo* u)
-{
-    applyMove(b, m, u);
-    int mover = !b->turn;
-    if (squareAttacked(b, kingSquare(b, mover), b->turn))
-    {
-        revertMove(b, m, u);
-        return false;
-    }
-    return true;
+    (void)ctx;
+    return mobility(b, moverSide(b));
 }
 
 static bool squareMaximizationEvaluate(const Board* b, int* score)
 {
-    *score = mobilityCount(b, b->turn);
+    *score = mobility(b, sideToMove(b));
     return true;
 }
 
 static bool squareMaximizationChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)limits;
+    searchResultInit(result);
 
-    result->bestMove = NO_MOVE;
-    result->nodes = 0;
-    result->hasScore = false;
-    result->score = 0;
-
+    // Score every legal move by the mobility it gives us, and keep the highest.
     Move moves[MAX_MOVES];
-    int  n = generateAllMoves(b, moves);
+    int  n = legalMoves(b, moves);
 
     Move bestMove = NO_MOVE;
     int  bestScore = -1;
 
     for (int i = 0; i < n; i++)
     {
-        Undo u;
-        if (!applyIfLegal(b, moves[i], &u))
-            continue;
-
         result->nodes++;
-        int score = mobilityCount(b, !b->turn);
-        revertMove(b, moves[i], &u);
-
+        int score = afterMove(b, moves[i], moverMobility, NULL);
         if (score > bestScore)
         {
             bestScore = score;

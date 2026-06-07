@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #endif
 
+#include "../algohelpers.h"
 #include "../movegen.h"
 
 #define DEFAULT_DEPTH       3
@@ -219,18 +220,6 @@ static void orderMoves(const Board* b, Move* moves, int count)
             moves[best] = tmp;
         }
     }
-}
-
-static bool applyIfLegal(Board* b, Move m, Undo* u)
-{
-    applyMove(b, m, u);
-    int mover = !b->turn;
-    if (squareAttacked(b, kingSquare(b, mover), b->turn))
-    {
-        revertMove(b, m, u);
-        return false;
-    }
-    return true;
 }
 
 static int negamax(Board* b, int depth, int alpha, int beta, SearchContext* ctx)

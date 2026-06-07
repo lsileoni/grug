@@ -30,6 +30,14 @@ compile_commands.json
 *.profdata
 .pytest_cache/
 
+# LaTeX local docs and generated files
+*.tex
+*.pdf
+*.aux
+*.log
+*.out
+*.toc
+
 # Python caches and environments
 __pycache__/
 *.py[cod]
@@ -43,7 +51,6 @@ bench/config.yaml
 bench/data/
 bench/tools/
 bench/*.log
-bench/SECURITY.md
 
 # Editor, shell, and OS files
 .vscode/
@@ -53,4 +60,3 @@ bench/SECURITY.md
 *~
 .DS_Store
 Thumbs.db
-deploy/
