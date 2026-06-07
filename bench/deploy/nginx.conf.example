@@ -1,0 +1,52 @@
+# Example nginx reverse proxy for Grug Bench.
+#   * terminates TLS and faces the public internet
+#   * forwards to the gunicorn server bound on 127.0.0.1 (scripts/run_gunicorn.sh)
+#   * optionally restricts the *interactive admin UI* to an allow-listed source IP
+#
+# Set `server.secure_cookies: true` in config.yaml when serving over HTTPS.
+
+upstream grug_bench {
+    server 127.0.0.1:8000;
+}
+
+# Who may reach the browser admin pages. Everything else (read-only UI, the
+# token-gated API, the worker + CI endpoints) stays open to the world.
+geo $admin_ok {
+    default 0;
+    10.0.0.0/8      1;     # e.g. your VPN / office range
+    203.0.113.7/32  1;     # e.g. a specific admin workstation
+}
+
+server {
+    listen 80;
+    server_name bench.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name bench.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/bench.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bench.example.com/privkey.pem;
+
+    client_max_body_size 32m;   # batch submissions carry PGN payloads
+
+    # Inherited by every location below (no per-location proxy_set_header).
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Interactive admin surface: admin token AND an allow-listed source IP.
+    # NOTE: do NOT add /api/tests or /api/ci/* here - GitHub Actions hits those
+    # from changing IPs and is already gated by the admin token.
+    location ~ ^/(new|login|logout)$ {
+        if ($admin_ok = 0) { return 403; }
+        proxy_pass http://grug_bench;
+    }
+
+    location / {
+        proxy_pass http://grug_bench;
+    }
+}

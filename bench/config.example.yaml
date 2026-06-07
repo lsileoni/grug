@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Grug Bench configuration. Copy to config.yaml (gitignored) and edit.
+#
+# SECURITY: see SECURITY.md for the deployment model. The short version:
+#   * read access is public; only the admin role can create/stop runs;
+#   * workers run untrusted, freshly built engine binaries - keep them on
+#     disposable hosts, give them ONLY the worker token, and turn the sandbox on.
+# ─────────────────────────────────────────────────────────────────────────────
+
+auth:
+  # Two separate secrets. The admin token creates/stops runs (CI + the web
+  # login); the worker token is all a worker needs to pull and submit work.
+  # Generate with:  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+  admin_token: "REPLACE_WITH_A_LONG_RANDOM_ADMIN_TOKEN"
+  worker_token: "REPLACE_WITH_A_LONG_RANDOM_WORKER_TOKEN"
+  # Signs the admin login cookie. Set a stable value so sessions survive a
+  # restart. Generate with the same one-liner as above.
+  session_secret: "REPLACE_WITH_A_LONG_RANDOM_SESSION_SECRET"
+  # Only set true for a fully trusted, non-public, single-host dev box. When
+  # false (the default), the server refuses to start with placeholder tokens.
+  allow_insecure: false
+
+# A bare `token:` is still honoured as a legacy single-secret fallback for both
+# roles (handy for local dev), but split tokens are required for a public deploy.
+
+engines:
+  grug:
+    source: "/srv/grug"                 # git url or local repo path (server-side)
+    build: "make -j ARCH= EXE=grug"     # build command, run in a checkout of <sha>
+    binary: "grug"                      # produced binary, relative to the checkout
+
+server:
+  host: "127.0.0.1"          # bind localhost and put a TLS reverse proxy in front
+  port: 8000
+  database: "data/bench.db"
+  batch_pairs: 25
+  max_pairs_limit: 200000    # ceiling per run (0 = unbounded); caps "until decided" SPRTs
+  secure_cookies: true       # set true when served over HTTPS (Secure cookie flag)
+  read_rate_limit: 0         # per-IP requests/window on heavy read routes (games view); 0 = off
+  read_rate_window: 60       # rate-limit window in seconds (prefer a proxy limit_req too)
+
+worker:
+  server_url: "https://bench.example.com"   # HTTPS so the worker token isn't sniffable
+  concurrency: 4
+  cutechess: "cutechess-cli"
+  cache: "data/engines"
+  sources: {}
+  references:
+    stockfish:
+      path: "stockfish"
+
+  # Confine every build + match to a throwaway, network-less, resource-capped
+  # container (see worker/sandbox/Dockerfile). Strongly recommended whenever the
+  # refs being tested are not fully trusted.
+  sandbox:
+    enabled: true
+    engine: "docker"                  # or "podman"
+    image: "grug-bench-sandbox:latest"
+    network: "none"
+    cpus: "2"
+    memory: "2g"
+    pids: 512
+    build_timeout: 900                # seconds
+    run_timeout: 0                    # 0 = no timeout
+    extra_args: []                    # escape hatch for extra container flags

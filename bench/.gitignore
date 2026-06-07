@@ -1,0 +1,18 @@
+# local config (copy from config.example.yaml)
+config.yaml
+.benchctl-*.yaml
+
+# runtime data: sqlite db, cached engine builds, cutechess workdirs
+data/
+
+# downloaded/built tools (stockfish, cutechess-cli)
+tools/
+
+# logs
+*.log
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

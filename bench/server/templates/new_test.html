@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}New test · Grug Bench{% endblock %}
+{% block body %}
+<h1>New test</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" class="panel" style="max-width:680px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <div class="row">
+    <div class="field">
+      <label>Test type</label>
+      <select name="type" id="type">
+        <option value="sprt">SPRT - dev vs base (did my patch gain Elo?)</option>
+        <option value="selftest">Self-test - algorithm A vs algorithm B</option>
+        <option value="gauntlet">Gauntlet - build vs reference (absolute Elo)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Engine</label>
+      <select name="engine" id="engine">
+        {% for e in engines %}<option value="{{ e.name }}">{{ e.name }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+
+  {% for e in engines %}
+    <datalist id="refs-{{ e.name }}">
+      {% for r in refs.get(e.name, []) %}<option value="{{ r }}">{% endfor %}
+    </datalist>
+    <datalist id="algorithms-{{ e.name }}">
+      {% for a in algorithms.get(e.name, []) %}<option value="{{ a }}">{% endfor %}
+    </datalist>
+  {% endfor %}
+
+  <div class="field">
+    <label id="devLabel">Dev ref (branch / tag / commit - engine A)</label>
+    <input name="dev_ref" id="dev_ref" list="refs-{{ engines[0].name if engines }}" placeholder="my-feature-branch" required>
+  </div>
+
+  <div class="field build-b-only">
+    <label id="baseLabel">Base ref (the baseline - engine B)</label>
+    <input name="base_ref" id="base_ref" list="refs-{{ engines[0].name if engines }}" placeholder="main">
+  </div>
+
+  <div class="build-options">
+    <div class="row">
+      <div class="field">
+        <label>Engine A algorithm</label>
+        <input name="dev_algorithm" id="dev_algorithm" list="algorithms-{{ engines[0].name if engines }}" placeholder="basic_search">
+      </div>
+      <div class="field build-b-only">
+        <label>Engine B algorithm</label>
+        <input name="base_algorithm" id="base_algorithm" list="algorithms-{{ engines[0].name if engines }}" placeholder="first_legal">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Engine A UCI options</label>
+        <textarea name="dev_options" placeholder="Threads=1"></textarea>
+      </div>
+      <div class="field build-b-only">
+        <label>Engine B UCI options</label>
+        <textarea name="base_options" placeholder="Threads=1"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="sprt-only">
+    <div class="row3">
+      <div class="field"><label>elo0</label><input name="elo0" value="0"></div>
+      <div class="field"><label>elo1</label><input name="elo1" value="5"></div>
+      <div class="field"><label>α = β</label><input name="alpha" value="0.05"></div>
+    </div>
+    <div class="hint">Standard gainer bounds are [0, 5]; for simplifications/regressions use [-5, 0] or [-3, 1].</div>
+  </div>
+
+  <div class="gauntlet-only" style="display:none">
+    <div class="field">
+      <label>Reference engine (name configured on workers)</label>
+      <input name="reference" value="stockfish">
+    </div>
+    <div class="field">
+      <label>Reference UCI options (one <span class="mono">Name=Value</span> per line)</label>
+      <textarea name="ref_options" placeholder="Skill Level=3&#10;# or: UCI_LimitStrength=true&#10;# UCI_Elo=1600">Skill Level=3</textarea>
+      <div class="hint">Throttle the reference toward Grug's level - full-strength Stockfish would be ~100% losses and yield no signal.</div>
+    </div>
+  </div>
+
+  <div class="row3">
+    <div class="field"><label>Time control</label><input name="tc" value="8+0.08"></div>
+    <div class="field"><label>Opening book</label><input name="book" value="starter.epd"></div>
+    <div class="field"><label>Cap (pairs, 0 = until decided)</label><input name="max_pairs" id="max_pairs" value="0"></div>
+  </div>
+
+  <div class="field">
+    <label>Note (optional)</label>
+    <input name="note" placeholder="e.g. add late move reductions">
+  </div>
+
+  <button class="btn" type="submit">Create test</button>
+  <a class="btn secondary" href="{{ url_for('index') }}">Cancel</a>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+  const refsByEngine = {{ refs|tojson }};
+  const algorithmsByEngine = {{ algorithms|tojson }};
+  const typeSel = document.getElementById('type');
+  const engineSel = document.getElementById('engine');
+  function syncType() {
+    const g = typeSel.value === 'gauntlet';
+    const s = typeSel.value === 'selftest';
+    document.querySelectorAll('.sprt-only').forEach(el => el.style.display = (g || s) ? 'none' : '');
+    document.querySelectorAll('.gauntlet-only').forEach(el => el.style.display = g ? '' : 'none');
+    document.querySelectorAll('.build-b-only').forEach(el => el.style.display = g ? 'none' : '');
+    document.getElementById('devLabel').textContent =
+      g ? 'Build ref (branch / tag / commit - engine A)' :
+      s ? 'Engine A ref (branch / tag / commit)' :
+      'Dev ref (branch / tag / commit - engine A)';
+    document.getElementById('baseLabel').textContent =
+      s ? 'Engine B ref (optional; empty = same as engine A)' : 'Base ref (the baseline - engine B)';
+    document.getElementById('base_ref').required = typeSel.value === 'sprt';
+    if ((g || s) && document.getElementById('max_pairs').value === '0') document.getElementById('max_pairs').value = '250';
+  }
+  function syncEngine() {
+    const name = engineSel.value;
+    ['dev_ref', 'base_ref'].forEach(id => document.getElementById(id).setAttribute('list', 'refs-' + name));
+    ['dev_algorithm', 'base_algorithm'].forEach(id => document.getElementById(id).setAttribute('list', 'algorithms-' + name));
+  }
+  typeSel.addEventListener('change', syncType);
+  engineSel.addEventListener('change', syncEngine);
+  syncType(); syncEngine();
+</script>
+{% endblock %}

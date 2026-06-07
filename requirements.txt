@@ -1,0 +1,5 @@
+# Root Python dependencies for helper scripts, bench server/worker, and tests.
+-r bench/requirements.txt
+
+# Used by tools/play.py for UCI engine interaction.
+python-chess>=1.999

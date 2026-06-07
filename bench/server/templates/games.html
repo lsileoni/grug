@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Games for test #{{ test.id }} · Grug Bench{% endblock %}
+{% block body %}
+<div style="display:flex;align-items:center;gap:12px">
+  <h1 style="margin:0">Games for test #{{ test.id }}</h1>
+  <span class="tag {{ test.type }}">{{ test.type }}</span>
+  <span class="status {{ test.status }}">{{ test.status }}</span>
+  <div class="spacer" style="flex:1"></div>
+  <a class="btn secondary" href="{{ url_for('test_page', test_id=test.id) }}">Back to test</a>
+</div>
+
+<div class="panel">
+  <div class="kv">
+    <div class="k">Engine A</div><div class="mono">{{ test.dev_ref }} @ {{ test.dev_sha[:10] }} {{ test.dev_options }}</div>
+    {% if test.type == 'gauntlet' %}
+    <div class="k">Engine B</div><div class="mono">{{ test.reference }} {{ test.ref_options }}</div>
+    {% else %}
+    <div class="k">Engine B</div><div class="mono">{{ test.base_ref }} @ {{ test.base_sha[:10] }} {{ test.base_options }}</div>
+    {% endif %}
+    <div class="k">Captured</div><div class="mono">{{ total_games }} games from {{ total_batches }} batches</div>
+  </div>
+</div>
+
+{% if total_games == 0 %}
+  <div class="panel empty">No PGNs captured for this test yet. New worker batches will submit PGNs with their results.</div>
+{% else %}
+{% macro pager() %}
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}
+    <a class="btn secondary" href="{{ url_for('games_page', test_id=test.id, page=page - 1) }}">&lsaquo; Prev</a>
+  {% else %}
+    <span class="btn secondary disabled">&lsaquo; Prev</span>
+  {% endif %}
+  <span class="mono">Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}
+    <a class="btn secondary" href="{{ url_for('games_page', test_id=test.id, page=page + 1) }}">Next &rsaquo;</a>
+  {% else %}
+    <span class="btn secondary disabled">Next &rsaquo;</span>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+{{ pager() }}
+<div class="panel" style="padding:0">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Batch</th><th>Round</th><th>White</th><th>Black</th><th>Result</th><th>A score</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for g in games %}
+      <tr>
+        <td class="mono">{{ g.number }}</td>
+        <td class="mono">{{ g.batch_id }}</td>
+        <td class="mono">{{ g.round }}</td>
+        <td>{{ g.white }}</td>
+        <td>{{ g.black }}</td>
+        <td class="mono">{{ g.result }}</td>
+        <td class="mono">{{ g.a_score }}</td>
+      </tr>
+      <tr>
+        <td colspan="7" class="game-cell">
+          <details class="game-viewer" data-positions='{{ g.positions|tojson }}'>
+            <summary>Show PGN</summary>
+            <div class="viewer">
+              <div class="board" data-board></div>
+              <div class="viewer-side">
+                <div class="viewer-controls">
+                  <button class="btn secondary" type="button" data-first>&laquo;</button>
+                  <button class="btn secondary" type="button" data-prev>&lsaquo;</button>
+                  <button class="btn secondary" type="button" data-next>&rsaquo;</button>
+                  <button class="btn secondary" type="button" data-last>&raquo;</button>
+                </div>
+                <div class="mono viewer-ply" data-ply></div>
+                <div class="mono viewer-fen" data-fen></div>
+              </div>
+            </div>
+            <pre class="pgn">{{ g.pgn }}</pre>
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{{ pager() }}
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='viewer.js') }}"></script>{% endblock %}

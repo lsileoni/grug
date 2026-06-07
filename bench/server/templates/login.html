@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Log in · Grug Bench{% endblock %}
+{% block body %}
+<h1>Log in</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form method="post" action="{{ url_for('login') }}" class="panel" style="max-width:420px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="next" value="{{ next }}">
+  <div class="field">
+    <label>Admin token</label>
+    <input name="token" type="password" autocomplete="current-password" autofocus required>
+    <div class="hint">Read access is open to everyone. A valid admin token is required
+      to create or stop runs. Workers use a separate token and never log in here.</div>
+  </div>
+  <button class="btn" type="submit">Log in</button>
+</form>
+{% endblock %}

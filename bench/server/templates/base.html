@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}Grug Bench{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="brand"><span>◆</span> Grug Bench</div>
+    <nav>
+      <a href="{{ url_for('index') }}">Tests</a>
+      <a href="{{ url_for('workers_page') }}">Workers</a>
+    </nav>
+    <div class="spacer"></div>
+    {% if is_admin %}
+      <a class="btn" href="{{ url_for('new_test') }}">+ New test</a>
+      <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn secondary" type="submit">Log out</button>
+      </form>
+    {% else %}
+      <a class="btn secondary" href="{{ url_for('login') }}">Log in</a>
+    {% endif %}
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
