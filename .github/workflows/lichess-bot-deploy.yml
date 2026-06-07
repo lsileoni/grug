@@ -1,0 +1,77 @@
+name: lichess-bot-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Makefile'
+      - 'CMakeLists.txt'
+      - 'build.ps1'
+      - 'deploy/lichess/**'
+      - '.github/workflows/lichess-bot-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: lichess-bot-deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential gcc make
+
+      - name: Build portable binary
+        run: make GRUG_IN_CONTAINER=1 native ARCH=
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          build/grug perft 4
+          printf 'uci\nisready\nsetoption name Algorithm value basic_search\nposition startpos\ngo depth 1\nquit\n' \
+            | build/grug | tee /tmp/grug-uci.out
+          grep -q '^uciok' /tmp/grug-uci.out
+          grep -q '^readyok' /tmp/grug-uci.out
+          grep -q '^bestmove ' /tmp/grug-uci.out
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.ref == 'refs/heads/main'
+    env:
+      DEPLOY_HOST: ${{ secrets.LICHESS_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.LICHESS_DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.LICHESS_DEPLOY_PORT || '22' }}
+      DEPLOY_KEY: ${{ secrets.LICHESS_DEPLOY_SSH_KEY }}
+    steps:
+      - name: Check deploy secrets
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_KEY"
+
+      - name: Install SSH key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/lichess_deploy
+          chmod 600 ~/.ssh/lichess_deploy
+          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy on VPS
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/lichess_deploy -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd /srv/grug && git fetch origin $GITHUB_SHA && git checkout -q $GITHUB_SHA && deploy/lichess/deploy.sh $GITHUB_SHA"

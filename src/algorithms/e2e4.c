@@ -2,15 +2,16 @@
 
 #include <stddef.h>
 
+#include "../algohelpers.h"
+
 static bool e2e4ChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)b;
     (void)limits;
 
+    searchResultInit(result);
     result->bestMove = makeMove(E2, E4);
     result->nodes = 1;
-    result->hasScore = false;
-    result->score = 0;
     return true;
 }
 

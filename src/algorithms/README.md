@@ -12,11 +12,110 @@ Use the existing files as examples:
   time/node limits, and UCI `info` output.
 - `first_legal.c`: minimal legal-move picker.
 - `square_maximization.c`: one-ply heuristic that picks the move maximizing the
-  mover's mobility, using attack bitboards (`PawnAttacks`, `pieceAttacks`) and an
-  `evaluate` hook.
+  mover's mobility, written with the `algohelpers` vocabulary (`legalMoves`,
+  `afterMove`, `mobility`) while keeping its loop visible.
+- `threat_aware.c`: one-ply heuristic that grabs winning captures (by `see`), gives
+  checks, and avoids hanging its own pieces. The worked example for the
+  `algohelpers` vocabulary below.
 - `first_generated.c`: intentionally pseudo-legal example.
 - `e2e4.c`: fixed-move example.
 - `no_move.c`: deliberately returns no move so the wrapper can fall back.
+
+## Easier path: the algohelpers vocabulary
+
+Most of the fiddly parts of writing an algorithm  filtering legal moves, the
+apply/revert dance, and turning bitboards into answers  are available as a small
+"chess vocabulary" in `src/algohelpers.h`. Include it and ask your question
+directly; your algorithm keeps its own loop and decision logic.
+
+```c
+#include "../algohelpers.h"
+```
+
+The helpers are plain functions, grouped by the question they answer:
+
+**Squares & pieces**
+
+- `pieceOn(b, sq)`, `typeOn(b, sq)`, `colourOn(b, sq)`, `isEmpty(b, sq)`
+- `pieceValue(type)`  centipawns (PAWN=100 … QUEEN=900, KING=0)
+
+**Vision & attackers**
+
+- `sees(b, sq)`  the squares the piece on `sq` attacks (knight jumps, slider rays
+  through occupancy, pawn diagonals). "What does the knight on d4 see?"
+- `attackersTo(b, sq)` / `attackersOf(b, sq, colour)`  pieces attacking a square
+- `isAttacked(b, sq, byColour)`, `isDefended(b, sq)`
+
+**Move consequences**
+
+- `moveIsCapture(b, m)`, `moveCaptured(b, m)`
+- `moveGivesCheck(b, m)`  does playing `m` check the opponent?
+- `captureGain(b, m)`  naive victim − attacker value
+- `see(b, m)`  full static exchange evaluation: the real material outcome of a
+  capture (or of a quiet move onto a contested square). Positive wins material.
+- `afterMove(b, m, fn, ctx)`  run any query on the position that *results* from a
+  move, without writing the apply/revert yourself.
+
+**Threats & safety**
+
+- `isHanging(b, sq)`, `hangingPieces(b, colour)`
+
+**Material & mobility**
+
+- `materialValue(b, colour)`, `materialBalance(b, colour)`, `materialCount(b, colour, type)`
+- `sideAttacks(b, colour)`, `mobility(b, colour)`
+
+**Convenience**
+
+- `searchResultInit(result)`  initialize every `SearchResult` field
+- `legalMoves(b, out)`  generate only the legal moves (no pseudo-legal filtering)
+- `applyIfLegal(b, m, &u)`  apply a move only if it leaves your king safe
+- `popNextSquare(&bb)`  walk a bitboard without a hand-written `poplsb` loop
+- `sideToMove(b)`, `moverSide(b)` (`!turn`, handy inside an `afterMove` query)
+
+Putting a few of these together, here is the heart of a threat-aware one-ply
+heuristic  the loop *is* the algorithm, and each line is a chess question:
+
+```c
+Move moves[MAX_MOVES];
+int  n = legalMoves(b, moves);
+
+Move bestMove  = NO_MOVE;
+int  bestScore = 0;
+
+for (int i = 0; i < n; i++)
+{
+    Move m     = moves[i];
+    int  score = 0;
+
+    if (moveIsCapture(b, m) && see(b, m) > 0)        // a capture that wins material
+        score += see(b, m);
+    if (moveGivesCheck(b, m))                         // a forcing move
+        score += 40;
+    score -= afterMove(b, m, moverHangingValue, NULL); // don't leave pieces loose
+
+    if (bestMove == NO_MOVE || score > bestScore)
+    {
+        bestScore = score;
+        bestMove  = m;
+    }
+}
+```
+
+Here `moverHangingValue` is a one-line `BoardQueryFn` that sums the value of the
+mover's hanging pieces (`hangingPieces` + `pieceValue`). See `threat_aware.c` for
+the complete, compilable version.
+
+### A guiding idea: vocabulary, not framework
+
+These helpers deliberately give you *questions*, not control flow. Your generate /
+loop / compare / decide stays in your algorithm file, where its meaning lives.
+
+There is exactly one optional convenience that owns the loop,
+`chooseHighestScoring(b, result, eval, ctx)`, for the narrow case where your
+algorithm genuinely *is* "score every legal move and keep the best". Reach for it
+only when that shape is the whole story; otherwise write the loop yourself with the
+queries above.
 
 ## File Layout
 
@@ -310,6 +409,11 @@ Many useful algorithms sit between `first_legal.c` (take the first legal move)
 and `basic_search.c` (full alpha-beta). A common middle ground is to score every
 legal move by the position it produces and keep the best one. `square_maximization.c`
 is the reference for this pattern.
+
+> With the `algohelpers` vocabulary this is just `legalMoves` + `afterMove` (and
+> `chooseHighestScoring` if scoring every move really is the whole algorithm). The
+> longer form below explains what those helpers do under the hood  read it to
+> understand the two things that are easy to get wrong.
 
 The shape is always the same: generate moves, apply each legal one, score the
 resulting position, revert, and track the maximum.

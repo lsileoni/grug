@@ -2,29 +2,20 @@
 
 #include <stddef.h>
 
-#include "../movegen.h"
+#include "../algohelpers.h"
 
 static bool firstLegalChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)limits;
-
-    result->bestMove = NO_MOVE;
-    result->nodes = 0;
-    result->hasScore = false;
-    result->score = 0;
+    searchResultInit(result);
 
     Move moves[MAX_MOVES];
-    int  n = generateAllMoves(b, moves);
-    for (int i = 0; i < n; i++)
+    int  n = legalMoves(b, moves);
+    if (n > 0)
     {
-        result->nodes++;
-        if (moveIsLegal(b, moves[i]))
-        {
-            result->bestMove = moves[i];
-            return true;
-        }
+        result->bestMove = moves[0];
+        result->nodes = 1;
     }
-
     return true;
 }
 

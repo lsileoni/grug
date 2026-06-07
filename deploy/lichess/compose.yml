@@ -1,0 +1,15 @@
+services:
+  grug-lichess-bot:
+    image: ghcr.io/lichess-bot-devs/lichess-bot:latest
+    container_name: grug-lichess-bot
+    restart: unless-stopped
+    init: true
+    volumes:
+      - ./config.yml:/lichess-bot/config/config.yml:ro
+      - ./engines:/lichess-bot/config/engines:ro
+      - ./game_records:/lichess-bot/config/game_records
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
