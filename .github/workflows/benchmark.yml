@@ -37,6 +37,10 @@ env:
 
 jobs:
   changes:
+    if: >-
+      vars.CI_SKIP_ACTOR == '' ||
+      (github.actor != vars.CI_SKIP_ACTOR &&
+       github.event.pull_request.user.login != vars.CI_SKIP_ACTOR)
     runs-on: ubuntu-latest
     outputs:
       source: ${{ steps.filter.outputs.source }}
@@ -53,6 +57,10 @@ jobs:
               - 'build.ps1'
 
   benchmark:
+    if: >-
+      vars.CI_SKIP_ACTOR == '' ||
+      (github.actor != vars.CI_SKIP_ACTOR &&
+       github.event.pull_request.user.login != vars.CI_SKIP_ACTOR)
     needs: changes
     runs-on: ubuntu-latest
     # Reject fork PRs early: building/running an untrusted head commit and

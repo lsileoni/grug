@@ -21,6 +21,11 @@ permissions:
 
 jobs:
   test:
+    if: >-
+      vars.CI_SKIP_ACTOR == '' ||
+      (github.actor != vars.CI_SKIP_ACTOR &&
+       github.event.head_commit.author.username != vars.CI_SKIP_ACTOR &&
+       !contains(github.event.commits.*.author.username, vars.CI_SKIP_ACTOR))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -48,7 +53,12 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (vars.CI_SKIP_ACTOR == '' ||
+       (github.actor != vars.CI_SKIP_ACTOR &&
+        github.event.head_commit.author.username != vars.CI_SKIP_ACTOR &&
+        !contains(github.event.commits.*.author.username, vars.CI_SKIP_ACTOR)))
     env:
       DEPLOY_HOST: ${{ secrets.LICHESS_DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.LICHESS_DEPLOY_USER }}
