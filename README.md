@@ -1,5 +1,7 @@
 # grug
 
+<img src="grug.png" alt="grug" width="320">
+
 A C11 UCI chess engine. The interesting part is that move-selection logic lives
 in swappable **algorithms**, so you can write and benchmark different approaches
 against each other.
