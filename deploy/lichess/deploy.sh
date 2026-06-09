@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${GRUG_REPO:-/srv/grug}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+default_repo="$(cd "$script_dir/../.." && pwd)"
+repo="${GRUG_REPO:-$default_repo}"
 app="${GRUG_LICHESS_HOME:-/srv/grug-lichess}"
 ref="${1:-main}"
 compose_bin="${COMPOSE_BIN:-docker compose}"
@@ -25,8 +27,6 @@ require_file() {
 }
 
 require_file "$env_file"
-require_file "$repo/deploy/lichess/compose.yml"
-require_file "$repo/deploy/lichess/config.yml.template"
 
 set -a
 # shellcheck disable=SC1090
@@ -39,13 +39,17 @@ if [ -z "${LICHESS_TOKEN:-}" ]; then
 fi
 
 log "fetching $ref in $repo"
-git -C "$repo" fetch origin
-git -C "$repo" checkout -q "$ref"
-if [ "$(git -C "$repo" symbolic-ref --short -q HEAD || true)" = "$ref" ]; then
-  git -C "$repo" pull --ff-only origin "$ref"
+if git -C "$repo" fetch origin "$ref"; then
+  git -C "$repo" reset --hard FETCH_HEAD
+else
+  git -C "$repo" fetch origin
+  git -C "$repo" reset --hard "$ref"
 fi
 sha="$(git -C "$repo" rev-parse HEAD)"
 release="$release_root/$sha"
+
+require_file "$repo/deploy/lichess/compose.yml"
+require_file "$repo/deploy/lichess/config.yml.template"
 
 mkdir -p "$release" "$compose_dir" "$engine_mount" "$compose_dir/game_records"
 
@@ -77,5 +81,5 @@ $compose_bin pull
 $compose_bin up -d --remove-orphans
 
 log "health check"
-"$repo/deploy/lichess/healthcheck.sh"
+bash "$repo/deploy/lichess/healthcheck.sh"
 log "deployed $sha"
