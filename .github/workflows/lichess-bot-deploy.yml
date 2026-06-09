@@ -84,4 +84,4 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/lichess_deploy -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd /srv/grug && git fetch origin $GITHUB_SHA && git checkout -q $GITHUB_SHA && deploy/lichess/deploy.sh $GITHUB_SHA"
+            "cd /srv/grug && git fetch origin $GITHUB_SHA && git reset --hard FETCH_HEAD && git clean -fdx && deploy/lichess/deploy.sh $GITHUB_SHA"
