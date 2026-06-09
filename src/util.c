@@ -6,7 +6,12 @@
 #include <windows.h>
 long long timeNowMs(void)
 {
-    return (long long)GetTickCount64();
+    static LARGE_INTEGER frequency;
+    LARGE_INTEGER        counter;
+    if (frequency.QuadPart == 0)
+        QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (long long)(counter.QuadPart * 1000 / frequency.QuadPart);
 }
 #else
 #include <sys/time.h>

@@ -9,7 +9,7 @@ an illegal move.
 Use the existing files as examples:
 
 - `basic_search.c`: real depth-limited search with evaluation, move ordering,
-  time/node limits, and UCI `info` output.
+  quiescence, time/node limits, and UCI `info` output.
 - `first_legal.c`: minimal legal-move picker.
 - `square_maximization.c`: one-ply heuristic that picks the move maximizing the
   mover's mobility, written with the `algohelpers` vocabulary (`legalMoves`,

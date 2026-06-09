@@ -2,14 +2,10 @@
 
 #include <stdio.h>
 #include <stddef.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <sys/time.h>
-#endif
 
 #include "../algohelpers.h"
 #include "../movegen.h"
+#include "../util.h"
 
 #define DEFAULT_DEPTH       3
 #define MAX_SEARCH_DEPTH    8
@@ -150,34 +146,23 @@ static bool basicSearchEvaluate(const Board* b, int* score)
     return true;
 }
 
-static long long nowMs(void)
-{
-#ifdef _WIN32
-    static LARGE_INTEGER frequency;
-    static bool          initialized = false;
-    LARGE_INTEGER        counter;
-    if (!initialized)
-    {
-        QueryPerformanceFrequency(&frequency);
-        initialized = true;
-    }
-    QueryPerformanceCounter(&counter);
-    return (long long)(counter.QuadPart * 1000 / frequency.QuadPart);
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-#endif
-}
-
 static long long elapsedMs(const SearchContext* ctx)
 {
-    return nowMs() - ctx->startMs;
+    return timeNowMs() - ctx->startMs;
 }
 
 static bool outOfTime(const SearchContext* ctx)
 {
     return ctx->timeLimitMs > 0 && elapsedMs(ctx) >= ctx->timeLimitMs;
+}
+
+static bool shouldStop(SearchContext* ctx)
+{
+    if (ctx->nodeLimit && ctx->nodes >= ctx->nodeLimit)
+        ctx->stopped = true;
+    if ((ctx->nodes & 255ULL) == 0 && outOfTime(ctx))
+        ctx->stopped = true;
+    return ctx->stopped;
 }
 
 static int moveScore(const Board* b, Move m)
@@ -200,43 +185,74 @@ static int moveScore(const Board* b, Move m)
 
 static void orderMoves(const Board* b, Move* moves, int count)
 {
-    for (int i = 0; i < count - 1; i++)
+    int scores[MAX_MOVES];
+    for (int i = 0; i < count; i++)
+        scores[i] = moveScore(b, moves[i]);
+
+    for (int i = 1; i < count; i++)
     {
-        int best = i;
-        int bestScore = moveScore(b, moves[i]);
-        for (int j = i + 1; j < count; j++)
+        Move m = moves[i];
+        int  s = scores[i];
+        int  j = i - 1;
+        for (; j >= 0 && scores[j] < s; j--)
         {
-            int score = moveScore(b, moves[j]);
-            if (score > bestScore)
-            {
-                best = j;
-                bestScore = score;
-            }
+            moves[j + 1] = moves[j];
+            scores[j + 1] = scores[j];
         }
-        if (best != i)
-        {
-            Move tmp = moves[i];
-            moves[i] = moves[best];
-            moves[best] = tmp;
-        }
+        moves[j + 1] = m;
+        scores[j + 1] = s;
     }
 }
 
-static int negamax(Board* b, int depth, int alpha, int beta, SearchContext* ctx)
+// Quiescence search: at the horizon, keep resolving captures and promotions so
+// the evaluation is never taken in the middle of an exchange.
+static int quiesce(Board* b, int alpha, int beta, SearchContext* ctx)
 {
     ctx->nodes++;
-    if (ctx->nodeLimit && ctx->nodes >= ctx->nodeLimit)
-        ctx->stopped = true;
-    if ((ctx->nodes & 255ULL) == 0 && outOfTime(ctx))
-        ctx->stopped = true;
-    if (ctx->stopped)
+    int standPat = staticEval(b);
+    if (shouldStop(ctx) || standPat >= beta)
+        return standPat;
+    if (standPat > alpha)
+        alpha = standPat;
+
+    Move moves[MAX_MOVES];
+    int  n = generateNoisyMoves(b, moves);
+    orderMoves(b, moves, n);
+
+    int best = standPat;
+    for (int i = 0; i < n; i++)
+    {
+        Undo u;
+        if (!applyIfLegal(b, moves[i], &u))
+            continue;
+
+        int score = -quiesce(b, -beta, -alpha, ctx);
+        revertMove(b, moves[i], &u);
+
+        if (ctx->stopped)
+            return score;
+        if (score > best)
+            best = score;
+        if (score > alpha)
+            alpha = score;
+        if (alpha >= beta)
+            break;
+    }
+
+    return best;
+}
+
+static int negamax(Board* b, int depth, int ply, int alpha, int beta, SearchContext* ctx)
+{
+    ctx->nodes++;
+    if (shouldStop(ctx))
         return staticEval(b);
 
     if (boardIsDraw(b))
         return VALUE_DRAW;
     bool inCheck = boardInCheck(b);
-    if (depth <= 0 && !inCheck)
-        return staticEval(b);
+    if ((depth <= 0 && !inCheck) || ply >= MAX_PLY)
+        return quiesce(b, alpha, beta, ctx);
 
     Move moves[MAX_MOVES];
     int  n = generateAllMoves(b, moves);
@@ -252,7 +268,7 @@ static int negamax(Board* b, int depth, int alpha, int beta, SearchContext* ctx)
             continue;
 
         foundLegal = true;
-        int score = -negamax(b, depth - 1, -beta, -alpha, ctx);
+        int score = -negamax(b, depth - 1, ply + 1, -beta, -alpha, ctx);
         revertMove(b, moves[i], &u);
 
         if (ctx->stopped)
@@ -266,7 +282,7 @@ static int negamax(Board* b, int depth, int alpha, int beta, SearchContext* ctx)
     }
 
     if (!foundLegal)
-        return inCheck ? -VALUE_MATE + b->ply : VALUE_DRAW;
+        return inCheck ? -VALUE_MATE + ply : VALUE_DRAW;
 
     return best;
 }
@@ -326,9 +342,12 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
             continue;
 
         foundLegal = true;
-        int score = -negamax(b, depth - 1, -beta, -alpha, ctx);
+        int score = -negamax(b, depth - 1, 1, -beta, -alpha, ctx);
         revertMove(b, moves[i], &u);
 
+        // A stopped search returns an unfinished score; don't let it pick a move.
+        if (ctx->stopped)
+            break;
         if (score > rootBestScore)
         {
             rootBestScore = score;
@@ -336,12 +355,10 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
         }
         if (score > alpha)
             alpha = score;
-        if (ctx->stopped)
-            break;
     }
 
     *bestMove = rootBestMove;
-    *bestScore = foundLegal ? rootBestScore : (boardInCheck(b) ? -VALUE_MATE + b->ply : VALUE_DRAW);
+    *bestScore = foundLegal ? rootBestScore : (boardInCheck(b) ? -VALUE_MATE : VALUE_DRAW);
     return foundLegal;
 }
 
@@ -357,7 +374,8 @@ static bool basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchRe
                                     ? MAX_SEARCH_DEPTH
                                     : searchDepthFromLimits(limits);
     SearchContext ctx = {
-        0, limits && limits->nodes > 0 ? (uint64_t)limits->nodes : 0, nowMs(), timeLimitMs, false,
+        0,     limits && limits->nodes > 0 ? (uint64_t)limits->nodes : 0, timeNowMs(), timeLimitMs,
+        false,
     };
 
     Move bestMove = NO_MOVE;
@@ -400,13 +418,13 @@ static bool basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchRe
     result->nodes = ctx.nodes;
     result->bestMove = bestMove;
     result->hasScore = foundLegal || bestMove == NO_MOVE;
-    result->score = foundLegal ? bestScore : (boardInCheck(b) ? -VALUE_MATE + b->ply : VALUE_DRAW);
+    result->score = foundLegal ? bestScore : (boardInCheck(b) ? -VALUE_MATE : VALUE_DRAW);
     return true;
 }
 
 const Algorithm BasicSearchAlgorithm = {
     "basic_search",
-    "depth-limited material search with alpha-beta pruning",
+    "alpha-beta search with quiescence and piece-square evaluation",
     NULL,
     NULL,
     basicSearchEvaluate,
