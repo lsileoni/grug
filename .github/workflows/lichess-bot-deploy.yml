@@ -84,4 +84,24 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/lichess_deploy -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "cd /srv/grug && git fetch origin $GITHUB_SHA && git reset --hard FETCH_HEAD && git clean -fdx && deploy/lichess/deploy.sh $GITHUB_SHA"
+            "GRUG_DEPLOY_REF=$GITHUB_SHA GRUG_REPO_URL=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          # Keep this separate from /srv/grug; that checkout may contain benchmark state.
+          repo="${GRUG_REPO:-/srv/grug-lichess/repo}"
+
+          if [ -d "$repo/.git" ]; then
+            git -C "$repo" remote set-url origin "$GRUG_REPO_URL"
+          else
+            if [ -e "$repo" ] && [ -n "$(ls -A "$repo")" ]; then
+              echo "$repo exists and is not an empty git repository" >&2
+              exit 1
+            fi
+            mkdir -p "$(dirname "$repo")"
+            git clone "$GRUG_REPO_URL" "$repo"
+          fi
+
+          git -C "$repo" fetch --prune origin "$GRUG_DEPLOY_REF"
+          git -C "$repo" reset --hard FETCH_HEAD
+          GRUG_REPO="$repo" bash "$repo/deploy/lichess/deploy.sh" "$GRUG_DEPLOY_REF"
+          REMOTE

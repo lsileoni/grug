@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${GRUG_REPO:-/srv/grug}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+default_repo="$(cd "$script_dir/../.." && pwd)"
+repo="${GRUG_REPO:-$default_repo}"
 app="${GRUG_LICHESS_HOME:-/srv/grug-lichess}"
 compose_bin="${COMPOSE_BIN:-docker compose}"
 engine="$app/current/grug"
