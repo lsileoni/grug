@@ -10,23 +10,10 @@
 
 static const char PieceChars[PIECE_NB + 1] = "PNBRQKpnbrqk";
 
-static int CastleMask[SQUARE_NB];
-
-static void initCastleMaskOnce(void)
-{
-    static bool done = false;
-    if (done)
-        return;
-    done = true;
-    for (int sq = 0; sq < SQUARE_NB; sq++)
-        CastleMask[sq] = 0xF;
-    CastleMask[E1] &= ~(CASTLE_WK | CASTLE_WQ);
-    CastleMask[H1] &= ~CASTLE_WK;
-    CastleMask[A1] &= ~CASTLE_WQ;
-    CastleMask[E8] &= ~(CASTLE_BK | CASTLE_BQ);
-    CastleMask[H8] &= ~CASTLE_BK;
-    CastleMask[A8] &= ~CASTLE_BQ;
-}
+static const int CastleRightsLost[SQUARE_NB] = {
+    [A1] = CASTLE_WQ, [E1] = CASTLE_WK | CASTLE_WQ, [H1] = CASTLE_WK,
+    [A8] = CASTLE_BQ, [E8] = CASTLE_BK | CASTLE_BQ, [H8] = CASTLE_BK,
+};
 
 static inline void addPiece(Board* b, int sq, int piece)
 {
@@ -56,9 +43,22 @@ static inline void movePiece(Board* b, int from, int to)
     b->hash ^= ZobristPieces[piece][from] ^ ZobristPieces[piece][to];
 }
 
+static void pushHistory(Board* b)
+{
+    enum
+    {
+        HISTORY_NB = sizeof b->history / sizeof b->history[0]
+    };
+    if (b->historyCount == HISTORY_NB)
+    {
+        memmove(b->history, b->history + HISTORY_NB / 2, sizeof b->history / 2);
+        b->historyCount = HISTORY_NB / 2;
+    }
+    b->history[b->historyCount++] = b->hash;
+}
+
 void boardClear(Board* b)
 {
-    initCastleMaskOnce();
     memset(b, 0, sizeof(*b));
     for (int sq = 0; sq < SQUARE_NB; sq++)
         b->squares[sq] = EMPTY;
@@ -167,7 +167,7 @@ void boardSetFen(Board* b, const char* fen)
     b->hash = computeHash(b);
     b->ply = 0;
     b->historyCount = 0;
-    b->history[b->historyCount++] = b->hash;
+    pushHistory(b);
 }
 
 void boardToFen(const Board* b, char* out)
@@ -330,7 +330,7 @@ void applyMove(Board* b, Move m, Undo* u)
         b->hash ^= ZobristEnPassant[fileOf(b->epSquare)];
     }
 
-    b->castlingRights &= CastleMask[from] & CastleMask[to];
+    b->castlingRights &= ~(CastleRightsLost[from] | CastleRightsLost[to]);
     b->hash ^= ZobristCastling[b->castlingRights];
 
     b->turn = them;
@@ -339,7 +339,7 @@ void applyMove(Board* b, Move m, Undo* u)
         b->fullmoveNumber++;
 
     b->ply++;
-    b->history[b->historyCount++] = b->hash;
+    pushHistory(b);
 }
 
 void revertMove(Board* b, Move m, Undo* u)
@@ -412,7 +412,7 @@ void applyNullMove(Board* b, Undo* u)
     b->hash ^= ZobristSide;
     b->halfmoveClock++;
     b->ply++;
-    b->history[b->historyCount++] = b->hash;
+    pushHistory(b);
 }
 
 void revertNullMove(Board* b, Undo* u)

@@ -139,20 +139,14 @@ int generateNoisyMoves(const Board* b, Move* moves)
 
 int generateQuietMoves(const Board* b, Move* moves)
 {
-    Move all[MAX_MOVES], noisy[MAX_MOVES];
-    int  na = generate(b, all, true);
-    int  nn = generate(b, noisy, false);
+    Move all[MAX_MOVES];
+    int  n = generate(b, all, true);
     int  idx = 0;
-    for (int i = 0; i < na; i++)
+    for (int i = 0; i < n; i++)
     {
-        bool isNoisy = false;
-        for (int j = 0; j < nn; j++)
-            if (all[i] == noisy[j])
-            {
-                isNoisy = true;
-                break;
-            }
-        if (!isNoisy)
+        int  type = moveType(all[i]);
+        bool noisy = type == PROMOTION || type == EN_PASSANT || b->squares[moveTo(all[i])] != EMPTY;
+        if (!noisy)
             moves[idx++] = all[i];
     }
     return idx;
