@@ -31,7 +31,7 @@ typedef struct
     uint64_t hash;
     int      ply;
 
-    uint64_t history[8192];
+    uint64_t history[512];
     int      historyCount;
 } Board;
 

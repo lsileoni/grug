@@ -1,20 +1,16 @@
 #include "no_move.h"
 
-#include <stddef.h>
-
 #include "../algohelpers.h"
 
-static bool noMoveChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
+static void noMoveChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
     (void)b;
     (void)limits;
-
-    searchResultInit(result);
-    return true;
+    (void)result;
 }
 
 const Algorithm NoMoveAlgorithm = {
-    "no_move", "example algorithm that deliberately returns no move and lets search fallback",
-    NULL,      NULL,
-    NULL,      noMoveChooseMove,
+    .name = "no_move",
+    .description = "example algorithm that returns no move and lets the engine fall back",
+    .chooseMove = noMoveChooseMove,
 };

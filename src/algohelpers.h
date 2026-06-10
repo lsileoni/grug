@@ -4,181 +4,169 @@
 #include "board.h"
 #include "search.h"
 
+// Chess questions for algorithms. Moves come out already legal; looking ahead
+// returns a copy, so there is nothing to revert.
+
+// ---------------------------------------------------------------------------
+// Moves
+// ---------------------------------------------------------------------------
+
+typedef struct
+{
+    Move moves[MAX_MOVES];
+    int  count;
+} MoveList;
+
+// All legal moves, with correct castling/promotion/en-passant flags.
+MoveList legalMoves(const Board* b);
+
+// ---------------------------------------------------------------------------
+// Looking ahead
+// ---------------------------------------------------------------------------
+
+// The position after `m`, as a copy; `b` is untouched. In the copy it is the
+// opponent's turn.
+Board boardAfter(const Board* b, Move m);
+
+// Whether `m` checks the opponent.
+bool moveGivesCheck(const Board* b, Move m);
+
+// ---------------------------------------------------------------------------
+// Position state (see also boardInCheck and boardIsDraw in board.h)
+// ---------------------------------------------------------------------------
+
+// Whether the side to move is checkmated.
+bool isCheckmate(const Board* b);
+
+// Whether the side to move has no legal move but is not in check.
+bool isStalemate(const Board* b);
+
+// ---------------------------------------------------------------------------
+// Move consequences
+// ---------------------------------------------------------------------------
+
+// Whether `m` captures (en passant counts).
+bool moveIsCapture(const Board* b, Move m);
+
+// The piece type `m` captures (PAWN for en passant), or -1 for a non-capture.
+int moveCaptured(const Board* b, Move m);
+
+// Victim value minus attacker value; 0 for a non-capture. Ignores recaptures -
+// use see() for the real outcome.
+int captureGain(const Board* b, Move m);
+
+// Static exchange evaluation: net centipawns for the mover after the full
+// capture sequence on the destination square. Positive wins material.
+int see(const Board* b, Move m);
+
 // ---------------------------------------------------------------------------
 // Squares & pieces
 // ---------------------------------------------------------------------------
 
-// The piece on a square, e.g. W_KNIGHT, or EMPTY. Returns colour and type
-// together; use typeOn/colourOn when you only want one of them.
+// The piece on `sq` (e.g. W_KNIGHT), or EMPTY.
 int pieceOn(const Board* b, int sq);
 
-// The kind of piece on a square (PAWN..KING), or -1 if the square is empty.
-// Handy for branching on what is standing somewhere ("is this a pawn?").
+// The piece type on `sq` (PAWN..KING), or -1 if empty.
 int typeOn(const Board* b, int sq);
 
-// Which side owns the piece on a square (WHITE/BLACK), or -1 if empty. Tells
-// friend from foe on a target or destination square.
+// The owner of the piece on `sq` (WHITE/BLACK), or -1 if empty.
 int colourOn(const Board* b, int sq);
 
-// Whether a square holds no piece. Use it to test that a destination, or a
-// square a piece must pass over, is free.
+// Whether `sq` holds no piece.
 bool isEmpty(const Board* b, int sq);
 
-// Rough centipawn worth of a piece type (pawn 100 .. queen 900, king 0). The
-// common currency for material maths: comparing trades, weighting targets,
-// summing up a side's material.
+// Centipawn value of a piece type: pawn 100 .. queen 900, king 0.
 int pieceValue(int type);
 
 // ---------------------------------------------------------------------------
 // Vision & attackers
 // ---------------------------------------------------------------------------
 
-// The squares the piece on `sq` currently attacks: a knight's jumps, a slider's
-// rays up to the first blocker, a pawn's two capture diagonals (0 for an empty
-// square). Use it to ask "what does this piece hit?"  list a knight's targets,
-// see if a rook eyes the enemy king, measure how much a bishop controls.
+// The squares the piece on `sq` attacks; 0 for an empty square.
 Bitboard sees(const Board* b, int sq);
 
-// Every piece of either colour that attacks `sq` right now. Use it to weigh up a
-// contested square (who is fighting over it) before you commit a piece to it.
+// All pieces of both colours attacking `sq`.
 Bitboard attackersTo(const Board* b, int sq);
 
-// The attackers of `sq` belonging to one side only. Use it to count a square's
-// defenders (your colour) or the threats against it (the enemy).
+// `colour`'s pieces attacking `sq`.
 Bitboard attackersOf(const Board* b, int sq, int colour);
 
-// Whether `byColour` attacks `sq` at all  the cheap yes/no when you do not need
-// the attackers themselves, e.g. "is this landing square covered by the enemy?".
+// Whether `byColour` attacks `sq`.
 bool isAttacked(const Board* b, int sq, int byColour);
 
-// Whether the piece on `sq` is backed up by a friendly piece. Pair it with
-// isAttacked to decide whether a piece is safe or loose. False for empty squares.
+// Whether the piece on `sq` has a friendly defender. False for empty squares.
 bool isDefended(const Board* b, int sq);
-
-// ---------------------------------------------------------------------------
-// Move consequences
-// ---------------------------------------------------------------------------
-
-// Whether `m` takes an enemy piece (en passant counts). Use it to separate
-// captures from quiet moves  to score them differently, or to feed only the
-// captures to see().
-bool moveIsCapture(const Board* b, Move m);
-
-// The type of piece `m` would capture (PAWN for en passant), or -1 if `m` is not
-// a capture. Tells you the prize before you play; pairs naturally with pieceValue.
-int moveCaptured(const Board* b, Move m);
-
-// Whether playing `m` would leave the opponent in check. Use it to find or prefer
-// forcing moves. It briefly makes and unmakes `m`, hence the writable `Board*`.
-bool moveGivesCheck(Board* b, Move m);
-
-// A quick material estimate of a capture: value taken minus value of the capturer
-// (0 for a non-capture). A fast first cut only  it ignores recaptures, so use
-// see() when you need to know a capture is actually safe.
-int captureGain(const Board* b, Move m);
-
-// Static exchange evaluation: plays out the full capture-and-recapture sequence on
-// the move's destination square, each side using its cheapest attacker, and
-// returns the net material in centipawns from the mover's point of view (positive
-// = comes out ahead). The reliable way to ask "is this capture safe or winning?";
-// it also flags quiet moves that step a piece onto a square the enemy would win.
-int see(const Board* b, Move m);
-
-// A question you want answered about a position: given a board and your `ctx`,
-// return a number. Used with afterMove to evaluate the position a move leads to.
-typedef int (*BoardQueryFn)(const Board* afterMove, void* ctx);
-
-// Plays `m`, runs your `fn` on the position it produces, takes the move back, and
-// returns whatever `fn` returned  one-ply lookahead without writing make/unmake
-// yourself. Use it to score the resulting position: your mobility after the move,
-// whether you left anything hanging, your material once the dust settles.
-int afterMove(Board* b, Move m, BoardQueryFn fn, void* ctx);
 
 // ---------------------------------------------------------------------------
 // Threats & safety
 // ---------------------------------------------------------------------------
 
-// Whether the piece on `sq` is attacked by the enemy and has no defender of its
-// own. Spots loose pieces  yours to rescue, or the opponent's to grab. False for
-// an empty square.
+// Whether the piece on `sq` is attacked and undefended. False for empty squares.
 bool isHanging(const Board* b, int sq);
 
-// All of `colour`'s pieces that are hanging right now (see isHanging). Use it to
-// total up loose material: penalise moves that leave your own pieces undefended,
-// or find the enemy's free pieces.
+// `colour`'s hanging pieces.
 Bitboard hangingPieces(const Board* b, int colour);
+
+// Total centipawn value of `colour`'s hanging pieces.
+int hangingValue(const Board* b, int colour);
+
+// ---------------------------------------------------------------------------
+// Pawn structure (all false when `sq` does not hold a pawn)
+// ---------------------------------------------------------------------------
+
+// No enemy pawn ahead on this or an adjacent file.
+bool isPassedPawn(const Board* b, int sq);
+
+// No friendly pawn on an adjacent file.
+bool isIsolatedPawn(const Board* b, int sq);
+
+// Two or more friendly pawns on this file.
+bool isDoubledPawn(const Board* b, int sq);
 
 // ---------------------------------------------------------------------------
 // Material & mobility
 // ---------------------------------------------------------------------------
 
-// How many pieces of one type a side has (e.g. White's knights). Useful for phase
-// or endgame checks and piece-specific heuristics.
+// How many of `colour`'s pieces are of `type`.
 int materialCount(const Board* b, int colour, int type);
 
-// Total centipawn worth of a side's pieces, kings aside. The material term of an
-// evaluation.
+// Total centipawn value of `colour`'s pieces, king excluded.
 int materialValue(const Board* b, int colour);
 
-// A side's material minus the opponent's (positive = that side is up material).
-// The usual "am I ahead?" number, measured from the colour you pass.
+// `colour`'s material minus the opponent's.
 int materialBalance(const Board* b, int colour);
 
-// The union of every square a side's pieces attack (pawns count their capture
-// diagonals, not pushes). Use it for space and coverage ideas  squares you
-// control, or whether you cover the enemy king's area.
+// Every square `colour` attacks (pawns: capture diagonals, not pushes).
 Bitboard sideAttacks(const Board* b, int colour);
 
-// How many squares a side attacks that are not blocked by its own pieces: a
-// one-number "how active am I?". Use it as a mobility term in an eval, or as a
-// whole heuristic on its own (see square_maximization).
+// How many squares `colour` attacks that its own pieces do not occupy.
 int mobility(const Board* b, int colour);
 
 // ---------------------------------------------------------------------------
-// Move lists, legality, and iteration
+// Time
 // ---------------------------------------------------------------------------
 
-// Clear a SearchResult to its empty state (no move, zero nodes, no score). Call
-// it once at the top of chooseMove so you only set the fields you actually fill.
-void searchResultInit(SearchResult* r);
+// Milliseconds to spend on this move per the UCI limits, safety margin
+// included; 0 when unconstrained. Pair with timeNowMs() from util.h.
+long long timeBudgetMs(const Board* b, const SearchLimits* limits);
 
-// Fill `out` with just the legal moves and return how many  no pseudo-legal
-// moves to filter yourself. The usual way to begin a root move loop. `out` must
-// have room for MAX_MOVES.
-int legalMoves(Board* b, Move* out);
+// ---------------------------------------------------------------------------
+// Iteration & sides
+// ---------------------------------------------------------------------------
 
-// Try to play `m`: if it would leave your own king in check it changes nothing
-// and returns false; otherwise it makes the move (you call revertMove afterwards)
-// and returns true. Use it when you walk pseudo-legal moves yourself and want to
-// skip the illegal ones.
-bool applyIfLegal(Board* b, Move m, Undo* u);
-
-// Remove and return the lowest square in a bitboard, or SQ_NONE once it is empty,
-// so you can walk a bitboard's squares with a plain loop:
-//     for (int sq; (sq = popNextSquare(&bb)) != SQ_NONE; ) { ... }
-// Typical with the squares from sees(), hangingPieces(), or a side's pieces.
+// Remove and return the lowest square of a bitboard, or SQ_NONE when empty:
+//     for (int sq; (sq = popNextSquare(&bb)) != SQ_NONE; ) ...
 int popNextSquare(Bitboard* bb);
 
 // The side whose turn it is.
 int sideToMove(const Board* b);
 
-// The other side  i.e. the side that just moved. This is usually what you want
-// inside an afterMove query, where the turn has already flipped to the opponent.
-int moverSide(const Board* b);
-
 // ---------------------------------------------------------------------------
-// Shortcut: score every move and keep the best
+// The fast path (deep searches only; everything above is simpler)
 // ---------------------------------------------------------------------------
 
-// Your scoring function: given the position after a candidate move and the side
-// that made it (`mover`), return a score - bigger is better.
-typedef int (*MoveEvalFn)(const Board* afterMove, int mover, void* ctx);
-
-// Tries every legal move, scores the position each one produces with your `eval`,
-// and fills `result` with the highest-scoring move - generation, make/unmake and
-// bookkeeping done for you. A shortcut for algorithms whose entire logic is "score
-// each move, keep the best"; if yours has any other shape, write the loop yourself
-// with the functions above so the logic stays visible. Always returns true.
-bool chooseHighestScoring(Board* b, SearchResult* result, MoveEvalFn eval, void* ctx);
+// Apply `m` in place if it leaves the own king safe; otherwise change nothing
+// and return false. Every applied move must be revertMove()d. See basic_search.c.
+bool applyIfLegal(Board* b, Move m, Undo* u);
 
 #endif

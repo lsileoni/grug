@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <string.h>
 
 #include "search.h"
 #include "algorithm.h"
@@ -82,7 +81,8 @@ bool searchEvaluate(const Board* b, int* score)
     const Algorithm* algorithm = activeAlgorithm();
     if (!algorithm->evaluate)
         return false;
-    return algorithm->evaluate(b, score);
+    *score = algorithm->evaluate(b);
+    return true;
 }
 
 void searchPrintAlgorithmOptions(void)
@@ -92,15 +92,17 @@ void searchPrintAlgorithmOptions(void)
 
 void searchPosition(Board* b, const SearchLimits* limits)
 {
-    const Algorithm* algorithm = activeAlgorithm();
-    SearchResult     result;
-    memset(&result, 0, sizeof result);
-    result.bestMove = NO_MOVE;
+    static const SearchLimits NoLimits;
+    if (!limits)
+        limits = &NoLimits;
 
-    if (!algorithm->chooseMove || !algorithm->chooseMove(b, limits, &result))
+    const Algorithm* algorithm = activeAlgorithm();
+    SearchResult     result = {.bestMove = NO_MOVE, .score = VALUE_NONE, .nodes = 0};
+
+    if (algorithm->chooseMove)
     {
-        printf("info string algorithm '%s' failed to choose a move\n", algorithm->name);
-        result.bestMove = NO_MOVE;
+        Board scratch = *b;
+        algorithm->chooseMove(&scratch, limits, &result);
     }
 
     Move best = result.bestMove;
@@ -114,7 +116,7 @@ void searchPosition(Board* b, const SearchLimits* limits)
         best = firstLegalMove(b);
     }
 
-    if (result.hasScore)
+    if (result.score != VALUE_NONE)
     {
         if (result.score >= VALUE_MATE_IN_MAX || result.score <= -VALUE_MATE_IN_MAX)
         {
