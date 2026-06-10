@@ -85,16 +85,17 @@ pgn_directory: "game_records"
 pgn_file_grouping: "all"
 
 matchmaking:
-  allow_matchmaking: false
+  allow_matchmaking: true
   allow_during_games: false
   challenge_variant: "standard"
-  challenge_timeout: 30
+  challenge_timeout: 180
   challenge_initial_time:
     - 180
   challenge_increment:
     - 2
-  opponent_rating_difference: 300
+  opponent_min_rating: 1000
+  opponent_max_rating: 2200
   rating_preference: "none"
-  challenge_mode: "casual"
-  challenge_filter: none
+  challenge_mode: "rated"
+  challenge_filter: fine
   include_challenge_block_list: false
