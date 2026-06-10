@@ -108,16 +108,35 @@ jobs:
       - name: Detect modified algorithm
         if: needs.changes.outputs.source == 'true'
         id: algo
-        # Determine which algorithm this PR touched so both engines play with
-        # the same selected strategy ("the modified algorithm against itself").
-        # Falls back to the engine default when the change is not algorithm-
-        # specific (e.g. shared search/board code).
+        # Determine the benchmark targets:
+        #   - default when shared engine/build code changed
+        #   - each specifically modified algorithm
+        # This catches mixed PRs, e.g. shared helpers plus square_maximization.
         run: |
           set -euo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          mapfile -t all_changed < <(
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+              'src/**' 'Makefile' 'CMakeLists.txt' 'build.ps1' || true
+          )
           mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'src/algorithms/*.[ch]' || true)
-          algo="default"
+
+          shared_changed=false
+          for f in "${all_changed[@]}"; do
+            case "$f" in
+              src/algorithms/*.[ch]) ;;
+              *) shared_changed=true ;;
+            esac
+          done
+
+          targets=()
+          if [ "$shared_changed" = "true" ]; then
+            targets+=("default")
+            echo "Shared engine/build files changed; benchmarking default algorithm."
+          fi
+
+          unique=()
           if [ "${#changed[@]}" -gt 0 ]; then
             names=()
             for f in "${changed[@]}"; do
@@ -152,21 +171,26 @@ jobs:
             if [ "${#names[@]}" -gt 0 ]; then
               mapfile -t unique < <(printf '%s\n' "${names[@]}" | sort -u)
             fi
-            if [ "${#unique[@]}" -eq 1 ]; then
-              algo="${unique[0]}"
-            elif [ "${#unique[@]}" -gt 1 ]; then
-              printf 'Changed multiple algorithms:' >&2
-              printf ' %s' "${unique[@]}" >&2
-              printf '\n' >&2
-              echo "::error::Benchmark can only auto-select one modified algorithm."
-              exit 1
-            else
+            if [ "${#unique[@]}" -eq 0 ]; then
               echo "::warning::Algorithm-specific files changed, but no algorithm name was detected; using engine default."
             fi
-          else
-            echo "No algorithm-specific file changed; using engine default algorithm."
+          elif [ "$shared_changed" != "true" ]; then
+            echo "No algorithm-specific or shared engine files changed; using engine default algorithm."
           fi
-          echo "algo=$algo" >> "$GITHUB_OUTPUT"
+
+          for name in "${unique[@]}"; do
+            targets+=("$name")
+          done
+
+          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF && !seen[$0]++')
+          if [ "${#targets[@]}" -eq 0 ]; then
+            targets+=("default")
+          fi
+
+          algos="$(IFS=,; echo "${targets[*]}")"
+          echo "Benchmark algorithms: $algos"
+          echo "algo=$algos" >> "$GITHUB_OUTPUT"
+          echo "algos=$algos" >> "$GITHUB_OUTPUT"
 
       - name: Build PR (dev) engine
         if: needs.changes.outputs.source == 'true'
@@ -208,41 +232,94 @@ jobs:
         id: match
         run: |
           set -euo pipefail
-          ALGO="${{ steps.algo.outputs.algo }}"
-          OPT=()
-          if [ "$ALGO" != "default" ]; then
-            OPT=("option.Algorithm=$ALGO")
-          fi
-          set +e
-          fastchess \
-            -engine name=dev cmd=build/grug-dev proto=uci "${OPT[@]}" \
-            -engine name=base cmd=build/grug-base proto=uci "${OPT[@]}" \
-            -each "$TC" \
-            -openings file=/tmp/book.epd format=epd order=random \
-            -games 2 -rounds "$ROUNDS" -repeat \
-            -concurrency "$CONCURRENCY" \
-            -draw movenumber=40 movecount=8 score=10 \
-            -resign movecount=4 score=600 twosided=true \
-            -recover \
-            -pgnout file=/tmp/games.pgn | tee /tmp/match.log
-          rc=$?
-          set -e
-          # A nonzero rc with no PGN means the harness itself failed.
-          if [ "$rc" -ne 0 ] && [ ! -s /tmp/games.pgn ]; then
-            echo "::error::Match harness failed (rc=$rc) and produced no games."
-            exit 1
-          fi
-          # Detect engine crashes/illegal moves reported by fastchess.
-          if grep -Eiq 'disconnect|terminated|stall|illegal' /tmp/match.log; then
-            echo "crashed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "crashed=false" >> "$GITHUB_OUTPUT"
-          fi
+          IFS=, read -r -a ALGOS <<< "${{ steps.algo.outputs.algos }}"
+          : > /tmp/bench-results.ndjson
+          crashed_any=false
 
-      - name: Compute Elo rating
-        if: needs.changes.outputs.source == 'true'
-        id: elo
-        run: python3 .github/scripts/elo_report.py /tmp/games.pgn dev base
+          for ALGO in "${ALGOS[@]}"; do
+            safe="$(printf '%s' "$ALGO" | tr -c 'A-Za-z0-9_.-' '_')"
+            pgn="/tmp/games-${safe}.pgn"
+            log="/tmp/match-${safe}.log"
+
+            OPT=()
+            if [ "$ALGO" != "default" ]; then
+              OPT=("option.Algorithm=$ALGO")
+            fi
+
+            echo "::group::fastchess $ALGO"
+            set +e
+            fastchess \
+              -engine name=dev cmd=build/grug-dev proto=uci "${OPT[@]}" \
+              -engine name=base cmd=build/grug-base proto=uci "${OPT[@]}" \
+              -each "$TC" \
+              -openings file=/tmp/book.epd format=epd order=random \
+              -games 2 -rounds "$ROUNDS" -repeat \
+              -concurrency "$CONCURRENCY" \
+              -draw movenumber=40 movecount=8 score=10 \
+              -resign movecount=4 score=600 twosided=true \
+              -recover \
+              -pgnout file="$pgn" | tee "$log"
+            rc=$?
+            set -e
+            echo "::endgroup::"
+
+            # A nonzero rc with no PGN means the harness itself failed.
+            if [ "$rc" -ne 0 ] && [ ! -s "$pgn" ]; then
+              echo "::error::Match harness failed for $ALGO (rc=$rc) and produced no games."
+              exit 1
+            fi
+
+            crashed=false
+            if grep -Eiq 'disconnect|terminated|stall|illegal' "$log"; then
+              crashed=true
+              crashed_any=true
+            fi
+
+            python3 - "$pgn" "$ALGO" "$crashed" >> /tmp/bench-results.ndjson <<'PY'
+          import importlib.util
+          import json
+          import math
+          import sys
+
+          pgn, algo, crashed = sys.argv[1], sys.argv[2], sys.argv[3]
+          spec = importlib.util.spec_from_file_location("elo_report", ".github/scripts/elo_report.py")
+          elo_report = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(elo_report)
+
+          wins, draws, losses = elo_report.parse_games(pgn, "dev", "base")
+          games = wins + draws + losses
+          elo, error_bar, los = elo_report.elo_with_ci(wins, draws, losses)
+          if not math.isfinite(elo):
+              elo = 0.0
+          if not math.isfinite(error_bar):
+              error_bar = 0.0
+          if not math.isfinite(los):
+              los = 0.0
+          print(json.dumps({
+              "algorithm": algo,
+              "games": games,
+              "wins": wins,
+              "draws": draws,
+              "losses": losses,
+              "elo": round(elo, 1),
+              "error_bar": round(error_bar, 1),
+              "los": round(los * 100.0, 1),
+              "crashed": crashed == "true",
+          }, separators=(",", ":")))
+          PY
+          done
+
+          results="$(python3 - <<'PY'
+          import json
+          with open("/tmp/bench-results.ndjson", "r", encoding="utf-8") as fh:
+              rows = [json.loads(line) for line in fh if line.strip()]
+          print(json.dumps(rows, separators=(",", ":")))
+          PY
+          )"
+
+          echo "results_json=$results" >> "$GITHUB_OUTPUT"
+          echo "crashed=$crashed_any" >> "$GITHUB_OUTPUT"
 
       - name: Optional SPRT on external bench server (non-blocking)
         if: >-
@@ -251,7 +328,7 @@ jobs:
         continue-on-error: true
         env:
           SHA: ${{ github.event.pull_request.head.sha }}
-          ALGO: ${{ steps.algo.outputs.algo }}
+          ALGOS: ${{ steps.algo.outputs.algos }}
         run: |
           python3 - <<'PY'
           import json, os, time, urllib.request
@@ -267,24 +344,30 @@ jobs:
               with urllib.request.urlopen(req, timeout=60) as resp:
                   return json.load(resp)
 
-          algo = os.environ.get("ALGO", "")
-          body = {
-              "engine": "grug", "type": "sprt",
-              "dev_ref": os.environ["SHA"], "base_ref": "main",
-              "elo0": -5, "elo1": 0, "tc": "nodes=200000", "max_pairs": 4000,
-          }
-          if algo and algo != "default":
-              body["dev_algorithm"] = algo
-              body["base_algorithm"] = algo
+          created = []
+          for algo in [a for a in os.environ.get("ALGOS", "default").split(",") if a]:
+              body = {
+                  "engine": "grug", "type": "sprt",
+                  "dev_ref": os.environ["SHA"], "base_ref": "main",
+                  "elo0": -5, "elo1": 0, "tc": "nodes=200000", "max_pairs": 4000,
+              }
+              if algo != "default":
+                  body["dev_algorithm"] = algo
+                  body["base_algorithm"] = algo
+              tid = call("/api/tests", body)["id"]
+              created.append((algo, tid))
+              print(f"SPRT dashboard ({algo}) -> {URL}/test/{tid}", flush=True)
 
-          tid = call("/api/tests", body)["id"]
-          print("SPRT dashboard ->", URL + "/test/" + str(tid), flush=True)
-          # Informational only: poll briefly, then leave it running server-side.
+          # Informational only: poll briefly, then leave tests running server-side.
           for _ in range(8):
-              t = call("/api/ci/test/%d" % tid)
-              print("games=%d LLR=%+.2f elo=%+.1f %s %s" % (
-                  t["games"], t["llr"], t["elo"], t["status"], t["result"]), flush=True)
-              if t["status"] in ("finished", "stopped", "failed"):
+              done = True
+              for algo, tid in created:
+                  t = call("/api/ci/test/%d" % tid)
+                  print("%s: games=%d LLR=%+.2f elo=%+.1f %s %s" % (
+                      algo, t["games"], t["llr"], t["elo"], t["status"], t["result"]), flush=True)
+                  if t["status"] not in ("finished", "stopped", "failed"):
+                      done = False
+              if done:
                   break
               time.sleep(15)
           PY
@@ -292,28 +375,26 @@ jobs:
       - name: Comment results on PR
         if: needs.changes.outputs.source == 'true' && always()
         continue-on-error: true
+        env:
+          RESULTS_JSON: ${{ steps.match.outputs.results_json }}
         uses: actions/github-script@v7
         with:
           script: |
-            const elo = `${{ steps.elo.outputs.elo || 'n/a' }}`;
-            const eb = `${{ steps.elo.outputs.error_bar || 'n/a' }}`;
-            const games = `${{ steps.elo.outputs.games || '0' }}`;
-            const los = `${{ steps.elo.outputs.los || 'n/a' }}`;
-            const w = `${{ steps.elo.outputs.wins || '0' }}`;
-            const d = `${{ steps.elo.outputs.draws || '0' }}`;
-            const l = `${{ steps.elo.outputs.losses || '0' }}`;
-            const algo = `${{ steps.algo.outputs.algo || 'default' }}`;
-            const crashed = `${{ steps.match.outputs.crashed || 'false' }}`;
+            const results = JSON.parse(process.env.RESULTS_JSON || '[]');
+            const rows = results.length
+              ? results.map(r => {
+                  const elo = Number(r.elo).toFixed(1);
+                  const eb = Number(r.error_bar).toFixed(1);
+                  const los = Number(r.los).toFixed(1);
+                  return `| \`${r.algorithm}\` | ${r.games} (W:${r.wins} D:${r.draws} L:${r.losses}) | **${elo} ± ${eb}** | ${los}% | ${r.crashed} |`;
+                })
+              : ['| n/a | 0 | n/a | n/a | n/a |'];
             const body = [
               `### Benchmark: PR engine vs \`main\` (past self)`,
               ``,
-              `| Metric | Value |`,
-              `| --- | --- |`,
-              `| Algorithm | \`${algo}\` |`,
-              `| Games | ${games} (W:${w} D:${d} L:${l}) |`,
-              `| **Elo** | **${elo} ± ${eb}** (95% CI) |`,
-              `| LOS (PR stronger) | ${los}% |`,
-              `| Engine crash detected | ${crashed} |`,
+              `| Algorithm | Games | Elo (95% CI) | LOS (PR stronger) | Crash |`,
+              `| --- | --- | --- | --- | --- |`,
+              ...rows,
               ``,
               `_Self-contained fastchess match at \`${process.env.TC || 'nodes=200000'}\`._`,
             ].join('\n');
@@ -331,30 +412,45 @@ jobs:
 
       - name: Gate on regression / crash
         if: needs.changes.outputs.source == 'true'
+        env:
+          RESULTS_JSON: ${{ steps.match.outputs.results_json }}
         run: |
           set -euo pipefail
-          ELO="${{ steps.elo.outputs.elo }}"
-          EB="${{ steps.elo.outputs.error_bar }}"
-          GAMES="${{ steps.elo.outputs.games }}"
-          CRASHED="${{ steps.match.outputs.crashed }}"
-          GUARD="${REGRESSION_GUARD_ELO}"
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
 
-          echo "Result: Elo=${ELO} +/- ${EB} over ${GAMES} games (crashed=${CRASHED})"
+          guard = float(os.environ["REGRESSION_GUARD_ELO"])
+          results = json.loads(os.environ.get("RESULTS_JSON") or "[]")
+          if not results:
+              print("::error::No benchmark results were produced.")
+              sys.exit(1)
 
-          if [ "$CRASHED" = "true" ]; then
-            echo "::error::Engine crash / illegal move detected during the match."
-            exit 1
-          fi
-          if [ "${GAMES:-0}" -eq 0 ]; then
-            echo "::error::No completed games were produced."
-            exit 1
-          fi
-          # Fail only on a statistically significant regression: the upper bound
-          # of the 95% CI (Elo + error_bar) is still below the guard threshold.
-          UPPER=$(python3 -c "print(${ELO} + ${EB})")
-          BELOW=$(python3 -c "print(1 if (${ELO} + ${EB}) < ${GUARD} else 0)")
-          if [ "$BELOW" -eq 1 ]; then
-            echo "::error::Significant regression: CI upper bound ${UPPER} Elo < ${GUARD} Elo."
-            exit 1
-          fi
-          echo "No significant regression. Benchmark gate passed."
+          failed = False
+          for r in results:
+              algo = r["algorithm"]
+              elo = float(r["elo"])
+              error_bar = float(r["error_bar"])
+              games = int(r["games"])
+              crashed = bool(r["crashed"])
+              upper = elo + error_bar
+
+              print(f"{algo}: Elo={elo:+.1f} +/- {error_bar:.1f} over {games} games (crashed={crashed})")
+
+              if crashed:
+                  print(f"::error::{algo}: engine crash / illegal move detected during the match.")
+                  failed = True
+              if games == 0:
+                  print(f"::error::{algo}: no completed games were produced.")
+                  failed = True
+              # Fail only on a statistically significant regression: the upper bound
+              # of the 95% CI (Elo + error_bar) is still below the guard threshold.
+              if upper < guard:
+                  print(f"::error::{algo}: significant regression: CI upper bound {upper:+.1f} Elo < {guard:+.1f} Elo.")
+                  failed = True
+
+          if failed:
+              sys.exit(1)
+          print("No significant regression. Benchmark gate passed.")
+          PY
