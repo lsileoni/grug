@@ -4,11 +4,67 @@
 #include "bitboard.h"
 #include "movegen.h"
 
-// Piece values used internally by the static exchange evaluator. The king is
-// given a value far larger than any realistic exchange so the swap resolution
-// never "wins" material by giving up the king. Public material helpers use
-// pieceValue() instead, where the king is worth 0.
+// SEE-internal values; the king is worth more than any exchange so the swap
+// never profits from losing it.
 static const int SeeValue[PIECE_TYPE_NB] = {100, 320, 330, 500, 900, 30000};
+
+// ---------------------------------------------------------------------------
+// Moves & looking ahead
+// ---------------------------------------------------------------------------
+
+MoveList legalMoves(const Board* b)
+{
+    Board scratch = *b;
+    Move  pseudo[MAX_MOVES];
+    int   n = generateAllMoves(&scratch, pseudo);
+
+    MoveList list;
+    list.count = 0;
+    for (int i = 0; i < n; i++)
+        if (moveIsLegal(&scratch, pseudo[i]))
+            list.moves[list.count++] = pseudo[i];
+    return list;
+}
+
+Board boardAfter(const Board* b, Move m)
+{
+    Board after = *b;
+    Undo  u;
+    applyMove(&after, m, &u);
+    return after;
+}
+
+bool moveGivesCheck(const Board* b, Move m)
+{
+    Board after = boardAfter(b, m);
+    return boardInCheck(&after);
+}
+
+bool applyIfLegal(Board* b, Move m, Undo* u)
+{
+    applyMove(b, m, u);
+    int mover = !b->turn;
+    if (squareAttacked(b, kingSquare(b, mover), b->turn))
+    {
+        revertMove(b, m, u);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Position state
+// ---------------------------------------------------------------------------
+
+bool isCheckmate(const Board* b)
+{
+    return boardInCheck(b) && legalMoves(b).count == 0;
+}
+
+bool isStalemate(const Board* b)
+{
+    return !boardInCheck(b) && legalMoves(b).count == 0;
+}
 
 // ---------------------------------------------------------------------------
 // Squares & pieces
@@ -59,10 +115,8 @@ Bitboard sees(const Board* b, int sq)
     return pieceAttacks(type, sq, boardOccupancy(b));
 }
 
-// Attackers of `sq` among all pieces, evaluating slider rays against a supplied
-// occupancy. The occupancy may differ from the real board (the SEE swap removes
-// captured pieces from it to reveal x-ray attackers), so callers that want only
-// pieces still on the board should intersect the result with that occupancy.
+// `occ` may omit pieces (the SEE swap removes them to expose x-ray attackers);
+// intersect the result with `occ` to keep only pieces still present.
 static Bitboard attackersToOcc(const Board* b, int sq, Bitboard occ)
 {
     Bitboard attackers = 0ULL;
@@ -117,15 +171,6 @@ int moveCaptured(const Board* b, Move m)
     return p == EMPTY ? -1 : pieceType(p);
 }
 
-bool moveGivesCheck(Board* b, Move m)
-{
-    Undo u;
-    applyMove(b, m, &u);
-    bool check = boardInCheck(b);
-    revertMove(b, m, &u);
-    return check;
-}
-
 int captureGain(const Board* b, Move m)
 {
     int victim = moveCaptured(b, m);
@@ -135,9 +180,8 @@ int captureGain(const Board* b, Move m)
     return pieceValue(victim) - pieceValue(attacker);
 }
 
-// Least valuable attacker of `side` within `set` (already restricted to that
-// side's attacking pieces). Returns the single-square bitboard of the chosen
-// piece and writes its SeeValue to `*valueOut`, or 0 if `set` is empty.
+// The cheapest piece in `set` as a single-square bitboard (0 if empty), its
+// SeeValue written to `*valueOut`.
 static Bitboard leastValuableAttacker(const Board* b, Bitboard set, int* valueOut)
 {
     for (int type = PAWN; type <= KING; type++)
@@ -164,8 +208,6 @@ int see(const Board* b, Move m)
     int gain[32];
     int depth = 0;
 
-    // Value captured by the initial move, and the value of the piece that ends up
-    // standing on `to` (which the opponent may now recapture).
     int onSquare = SeeValue[pieceType(b->squares[from])];
     if (type == EN_PASSANT)
     {
@@ -184,8 +226,6 @@ int see(const Board* b, Move m)
         onSquare = SeeValue[promo];
     }
 
-    // Make the initial move on the occupancy: the attacker leaves `from` and now
-    // sits on `to`.
     occ ^= squareBB(from);
     occ |= squareBB(to);
 
@@ -204,33 +244,24 @@ int see(const Board* b, Move m)
         depth++;
         gain[depth] = onSquare - gain[depth - 1];
 
-        // Stop once the side to move cannot improve on simply standing pat.
+        // Neither continuing nor standing pat helps the side to move: prune.
         int bestSoFar = -gain[depth - 1] > gain[depth] ? -gain[depth - 1] : gain[depth];
         if (bestSoFar < 0)
             break;
 
-        onSquare = attackerValue; // the recapturing piece now stands on `to`
+        onSquare = attackerValue;
         occ ^= next;
         attackers = attackersToOcc(b, to, occ) & occ;
         side ^= 1;
     }
 
-    // Resolve the gain stack with negamax-style minimaxing of the exchange.
+    // Resolve the exchange backwards; each side may stand pat.
     while (depth > 0)
     {
         gain[depth - 1] = -(-gain[depth - 1] > gain[depth] ? -gain[depth - 1] : gain[depth]);
         depth--;
     }
     return gain[0];
-}
-
-int afterMove(Board* b, Move m, BoardQueryFn fn, void* ctx)
-{
-    Undo u;
-    applyMove(b, m, &u);
-    int result = fn(b, ctx);
-    revertMove(b, m, &u);
-    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +285,56 @@ Bitboard hangingPieces(const Board* b, int colour)
         if (isAttacked(b, sq, colour ^ 1) && !isDefended(b, sq))
             out |= squareBB(sq);
     return out;
+}
+
+int hangingValue(const Board* b, int colour)
+{
+    Bitboard hanging = hangingPieces(b, colour);
+    int      total = 0;
+    int      sq;
+    while ((sq = popNextSquare(&hanging)) != SQ_NONE)
+        total += pieceValue(typeOn(b, sq));
+    return total;
+}
+
+// ---------------------------------------------------------------------------
+// Pawn structure
+// ---------------------------------------------------------------------------
+
+// Squares strictly ahead of `sq` on its own file, from `colour`'s viewpoint.
+static Bitboard frontSpan(int colour, int sq)
+{
+    Bitboard front = colour == WHITE ? shiftNorth(squareBB(sq)) : shiftSouth(squareBB(sq));
+    front |= colour == WHITE ? front << 8 : front >> 8;
+    front |= colour == WHITE ? front << 16 : front >> 16;
+    front |= colour == WHITE ? front << 32 : front >> 32;
+    return front;
+}
+
+bool isPassedPawn(const Board* b, int sq)
+{
+    if (typeOn(b, sq) != PAWN)
+        return false;
+    int      colour = colourOn(b, sq);
+    Bitboard front = frontSpan(colour, sq);
+    Bitboard lane = front | shiftEast(front) | shiftWest(front);
+    return !(boardPieces(b, colour ^ 1, PAWN) & lane);
+}
+
+bool isIsolatedPawn(const Board* b, int sq)
+{
+    if (typeOn(b, sq) != PAWN)
+        return false;
+    Bitboard file = FileBB[fileOf(sq)];
+    Bitboard adjacent = shiftEast(file) | shiftWest(file);
+    return !(boardPieces(b, colourOn(b, sq), PAWN) & adjacent);
+}
+
+bool isDoubledPawn(const Board* b, int sq)
+{
+    if (typeOn(b, sq) != PAWN)
+        return false;
+    return several(boardPieces(b, colourOn(b, sq), PAWN) & FileBB[fileOf(sq)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,39 +385,42 @@ int mobility(const Board* b, int colour)
 }
 
 // ---------------------------------------------------------------------------
-// Convenience
+// Time
 // ---------------------------------------------------------------------------
 
-void searchResultInit(SearchResult* r)
+enum
 {
-    r->bestMove = NO_MOVE;
-    r->nodes = 0;
-    r->hasScore = false;
-    r->score = 0;
-}
+    MOVE_OVERHEAD_MS = 100,  // margin for I/O latency so we never flag
+    INFINITE_THINK_MS = 1000 // "go infinite" budget; grug has no stop handling
+};
 
-int legalMoves(Board* b, Move* out)
+long long timeBudgetMs(const Board* b, const SearchLimits* limits)
 {
-    Move pseudo[MAX_MOVES];
-    int  n = generateAllMoves(b, pseudo);
-    int  count = 0;
-    for (int i = 0; i < n; i++)
-        if (moveIsLegal(b, pseudo[i]))
-            out[count++] = pseudo[i];
-    return count;
-}
+    if (limits->movetime > 0)
+        return limits->movetime > MOVE_OVERHEAD_MS ? limits->movetime - MOVE_OVERHEAD_MS : 1;
 
-bool applyIfLegal(Board* b, Move m, Undo* u)
-{
-    applyMove(b, m, u);
-    int mover = !b->turn;
-    if (squareAttacked(b, kingSquare(b, mover), b->turn))
+    long long remaining = b->turn == WHITE ? limits->wtime : limits->btime;
+    long long increment = b->turn == WHITE ? limits->winc : limits->binc;
+    if (remaining > 0)
     {
-        revertMove(b, m, u);
-        return false;
+        int       movesToGo = limits->movestogo > 0 ? limits->movestogo : 30;
+        long long budget = remaining / movesToGo + increment / 2;
+        long long maxBudget = remaining > MOVE_OVERHEAD_MS ? remaining - MOVE_OVERHEAD_MS : 1;
+        if (budget > maxBudget)
+            budget = maxBudget;
+        if (budget < 1)
+            budget = 1;
+        return budget;
     }
-    return true;
+
+    if (limits->infinite)
+        return INFINITE_THINK_MS;
+    return 0;
 }
+
+// ---------------------------------------------------------------------------
+// Iteration & sides
+// ---------------------------------------------------------------------------
 
 int popNextSquare(Bitboard* bb)
 {
@@ -348,48 +432,4 @@ int popNextSquare(Bitboard* bb)
 int sideToMove(const Board* b)
 {
     return b->turn;
-}
-
-int moverSide(const Board* b)
-{
-    return !b->turn;
-}
-
-// ---------------------------------------------------------------------------
-// Move evaluator
-// ---------------------------------------------------------------------------
-
-bool chooseHighestScoring(Board* b, SearchResult* result, MoveEvalFn eval, void* ctx)
-{
-    searchResultInit(result);
-
-    Move moves[MAX_MOVES];
-    int  n = legalMoves(b, moves);
-
-    Move best = NO_MOVE;
-    int  bestScore = 0;
-
-    for (int i = 0; i < n; i++)
-    {
-        Undo u;
-        applyMove(b, moves[i], &u);
-        int mover = !b->turn;
-        int score = eval(b, mover, ctx);
-        revertMove(b, moves[i], &u);
-
-        result->nodes++;
-        if (best == NO_MOVE || score > bestScore)
-        {
-            bestScore = score;
-            best = moves[i];
-        }
-    }
-
-    result->bestMove = best;
-    if (best != NO_MOVE)
-    {
-        result->hasScore = true;
-        result->score = bestScore;
-    }
-    return true;
 }

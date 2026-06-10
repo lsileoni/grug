@@ -17,9 +17,8 @@ typedef struct
 typedef struct
 {
     Move     bestMove;
-    uint64_t nodes;
-    bool     hasScore;
     int      score;
+    uint64_t nodes;
 } SearchResult;
 
 void        searchInit(void);

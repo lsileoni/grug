@@ -7,10 +7,8 @@
 #include "../movegen.h"
 #include "../util.h"
 
-#define DEFAULT_DEPTH       3
-#define MAX_SEARCH_DEPTH    8
-#define DEFAULT_INFINITE_MS 1000
-#define MOVE_OVERHEAD_MS    100
+#define DEFAULT_DEPTH    3
+#define MAX_SEARCH_DEPTH 8
 
 typedef struct
 {
@@ -140,12 +138,6 @@ static int staticEval(const Board* b)
     return b->turn == WHITE ? score : -score;
 }
 
-static bool basicSearchEvaluate(const Board* b, int* score)
-{
-    *score = staticEval(b);
-    return true;
-}
-
 static long long elapsedMs(const SearchContext* ctx)
 {
     return timeNowMs() - ctx->startMs;
@@ -204,8 +196,6 @@ static void orderMoves(const Board* b, Move* moves, int count)
     }
 }
 
-// Quiescence search: at the horizon, keep resolving captures and promotions so
-// the evaluation is never taken in the middle of an exchange.
 static int quiesce(Board* b, int alpha, int beta, SearchContext* ctx)
 {
     ctx->nodes++;
@@ -289,38 +279,8 @@ static int negamax(Board* b, int depth, int ply, int alpha, int beta, SearchCont
 
 static int searchDepthFromLimits(const SearchLimits* limits)
 {
-    int depth = DEFAULT_DEPTH;
-    if (limits && limits->depth > 0)
-        depth = limits->depth;
-    if (depth > MAX_SEARCH_DEPTH)
-        depth = MAX_SEARCH_DEPTH;
-    return depth;
-}
-
-static long long searchTimeFromLimits(const Board* b, const SearchLimits* limits)
-{
-    if (!limits)
-        return 0;
-    if (limits->movetime > 0)
-        return limits->movetime > MOVE_OVERHEAD_MS ? limits->movetime - MOVE_OVERHEAD_MS : 1;
-
-    long long remaining = b->turn == WHITE ? limits->wtime : limits->btime;
-    long long increment = b->turn == WHITE ? limits->winc : limits->binc;
-    if (remaining > 0)
-    {
-        int       movesToGo = limits->movestogo > 0 ? limits->movestogo : 30;
-        long long budget = remaining / movesToGo + increment / 2;
-        long long maxBudget = remaining > MOVE_OVERHEAD_MS ? remaining - MOVE_OVERHEAD_MS : 1;
-        if (budget > maxBudget)
-            budget = maxBudget;
-        if (budget < 1)
-            budget = 1;
-        return budget;
-    }
-
-    if (limits->infinite)
-        return DEFAULT_INFINITE_MS;
-    return 0;
+    int depth = limits->depth > 0 ? limits->depth : DEFAULT_DEPTH;
+    return depth > MAX_SEARCH_DEPTH ? MAX_SEARCH_DEPTH : depth;
 }
 
 static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, int* bestScore)
@@ -345,7 +305,7 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
         int score = -negamax(b, depth - 1, 1, -beta, -alpha, ctx);
         revertMove(b, moves[i], &u);
 
-        // A stopped search returns an unfinished score; don't let it pick a move.
+        // A stopped search returns an unfinished score; it must not pick a move.
         if (ctx->stopped)
             break;
         if (score > rootBestScore)
@@ -362,25 +322,15 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
     return foundLegal;
 }
 
-static bool basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
+static void basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
 {
-    result->bestMove = NO_MOVE;
-    result->nodes = 0;
-    result->hasScore = false;
-    result->score = 0;
+    long long timeLimitMs = timeBudgetMs(b, limits);
+    int       targetDepth =
+        (timeLimitMs > 0 && limits->depth <= 0) ? MAX_SEARCH_DEPTH : searchDepthFromLimits(limits);
 
-    long long     timeLimitMs = searchTimeFromLimits(b, limits);
-    int           targetDepth = (timeLimitMs > 0 && (!limits || limits->depth <= 0))
-                                    ? MAX_SEARCH_DEPTH
-                                    : searchDepthFromLimits(limits);
     SearchContext ctx = {
-        0,     limits && limits->nodes > 0 ? (uint64_t)limits->nodes : 0, timeNowMs(), timeLimitMs,
-        false,
+        0, limits->nodes > 0 ? (uint64_t)limits->nodes : 0, timeNowMs(), timeLimitMs, false,
     };
-
-    Move bestMove = NO_MOVE;
-    int  bestScore = VALUE_DRAW;
-    bool foundLegal = false;
 
     for (int depth = 1; depth <= targetDepth; depth++)
     {
@@ -388,27 +338,26 @@ static bool basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchRe
         int  iterationScore = VALUE_DRAW;
         bool iterationFound = searchRoot(b, depth, &ctx, &iterationMove, &iterationScore);
 
-        if (iterationFound && !ctx.stopped)
+        if (!iterationFound)
         {
-            foundLegal = true;
-            bestMove = iterationMove;
-            bestScore = iterationScore;
+            result->score = iterationScore;
+            break;
+        }
+
+        if (!ctx.stopped)
+        {
+            result->bestMove = iterationMove;
+            result->score = iterationScore;
             printf(
-                "info depth %d score cp %d nodes %llu time %lld\n", depth, bestScore,
+                "info depth %d score cp %d nodes %llu time %lld\n", depth, iterationScore,
                 (unsigned long long)ctx.nodes, elapsedMs(&ctx)
             );
             fflush(stdout);
         }
-        else if (!foundLegal && iterationFound)
+        else if (result->bestMove == NO_MOVE && iterationMove != NO_MOVE)
         {
-            foundLegal = true;
-            bestMove = iterationMove;
-            bestScore = iterationScore;
-        }
-        else if (!iterationFound)
-        {
-            bestScore = iterationScore;
-            break;
+            result->bestMove = iterationMove;
+            result->score = iterationScore;
         }
 
         if (ctx.stopped || outOfTime(&ctx))
@@ -416,17 +365,11 @@ static bool basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchRe
     }
 
     result->nodes = ctx.nodes;
-    result->bestMove = bestMove;
-    result->hasScore = foundLegal || bestMove == NO_MOVE;
-    result->score = foundLegal ? bestScore : (boardInCheck(b) ? -VALUE_MATE : VALUE_DRAW);
-    return true;
 }
 
 const Algorithm BasicSearchAlgorithm = {
-    "basic_search",
-    "alpha-beta search with quiescence and piece-square evaluation",
-    NULL,
-    NULL,
-    basicSearchEvaluate,
-    basicSearchChooseMove,
+    .name = "basic_search",
+    .description = "alpha-beta search with quiescence and piece-square evaluation",
+    .evaluate = staticEval,
+    .chooseMove = basicSearchChooseMove,
 };
