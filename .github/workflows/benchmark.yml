@@ -116,18 +116,53 @@ jobs:
           set -euo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'src/algorithms/*.c' || true)
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- 'src/algorithms/*.[ch]' || true)
           algo="default"
           if [ "${#changed[@]}" -gt 0 ]; then
-            f="${changed[0]}"
-            # The registered UCI name is the first string literal in the
-            # `const Algorithm <X> = { "name", ... }` initializer.
-            name="$(grep -ozP 'const\s+Algorithm\s+\w+\s*=\s*\{\s*"[^"]+"' "$f" \
-              | tr '\0' '\n' | grep -oE '"[^"]+"' | tail -1 | tr -d '"' || true)"
-            if [ -n "$name" ]; then
-              algo="$name"
+            names=()
+            for f in "${changed[@]}"; do
+              case "$f" in
+                *.h) source="${f%.h}.c" ;;
+                *) source="$f" ;;
+              esac
+              [ -f "$source" ] || continue
+
+              # Prefer the designated initializer used by current algorithms,
+              # but keep the positional form supported for older examples.
+              name="$(
+                grep -ozP '\.name\s*=\s*"[^"]+"' "$source" \
+                  | tr '\0' '\n' | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true
+              )"
+              if [ -z "$name" ]; then
+                name="$(
+                  grep -ozP 'const\s+Algorithm\s+\w+\s*=\s*\{\s*"[^"]+"' "$source" \
+                    | tr '\0' '\n' | grep -oE '"[^"]+"' | tail -1 | tr -d '"' || true
+                )"
+              fi
+
+              if [ -n "$name" ]; then
+                names+=("$name")
+                echo "Modified algorithm file: $f -> '$name'"
+              else
+                echo "::warning::Could not determine algorithm name from $source"
+              fi
+            done
+
+            unique=()
+            if [ "${#names[@]}" -gt 0 ]; then
+              mapfile -t unique < <(printf '%s\n' "${names[@]}" | sort -u)
             fi
-            echo "Modified algorithm file: $f -> '$algo'"
+            if [ "${#unique[@]}" -eq 1 ]; then
+              algo="${unique[0]}"
+            elif [ "${#unique[@]}" -gt 1 ]; then
+              printf 'Changed multiple algorithms:' >&2
+              printf ' %s' "${unique[@]}" >&2
+              printf '\n' >&2
+              echo "::error::Benchmark can only auto-select one modified algorithm."
+              exit 1
+            else
+              echo "::warning::Algorithm-specific files changed, but no algorithm name was detected; using engine default."
+            fi
           else
             echo "No algorithm-specific file changed; using engine default algorithm."
           fi
@@ -216,6 +251,7 @@ jobs:
         continue-on-error: true
         env:
           SHA: ${{ github.event.pull_request.head.sha }}
+          ALGO: ${{ steps.algo.outputs.algo }}
         run: |
           python3 - <<'PY'
           import json, os, time, urllib.request
@@ -231,11 +267,17 @@ jobs:
               with urllib.request.urlopen(req, timeout=60) as resp:
                   return json.load(resp)
 
-          tid = call("/api/tests", {
+          algo = os.environ.get("ALGO", "")
+          body = {
               "engine": "grug", "type": "sprt",
               "dev_ref": os.environ["SHA"], "base_ref": "main",
               "elo0": -5, "elo1": 0, "tc": "nodes=200000", "max_pairs": 4000,
-          })["id"]
+          }
+          if algo and algo != "default":
+              body["dev_algorithm"] = algo
+              body["base_algorithm"] = algo
+
+          tid = call("/api/tests", body)["id"]
           print("SPRT dashboard ->", URL + "/test/" + str(tid), flush=True)
           # Informational only: poll briefly, then leave it running server-side.
           for _ in range(8):
