@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "../algohelpers.h"
 #include "../movegen.h"
@@ -9,6 +10,28 @@
 
 #define DEFAULT_DEPTH    3
 #define MAX_SEARCH_DEPTH 8
+#define TT_BITS          20
+#define TT_SIZE          (1u << TT_BITS)
+#define TT_MASK          (TT_SIZE - 1u)
+
+enum
+{
+    TT_NONE = 0,
+    TT_EXACT,
+    TT_LOWER,
+    TT_UPPER,
+};
+
+typedef struct
+{
+    uint64_t key;
+    int      score;
+    int      depth;
+    Move     bestMove;
+    uint8_t  flag;
+} TTEntry;
+
+static TTEntry TranspositionTable[TT_SIZE];
 
 typedef struct
 {
@@ -20,6 +43,74 @@ typedef struct
 } SearchContext;
 
 static const int PieceValue[PIECE_TYPE_NB] = {100, 320, 330, 500, 900, 0};
+
+static void clearTranspositionTable(void)
+{
+    memset(TranspositionTable, 0, sizeof TranspositionTable);
+}
+
+static int scoreToTT(int score, int ply)
+{
+    if (score >= VALUE_MATE_IN_MAX)
+        return score + ply;
+    if (score <= -VALUE_MATE_IN_MAX)
+        return score - ply;
+    return score;
+}
+
+static int scoreFromTT(int score, int ply)
+{
+    if (score >= VALUE_MATE_IN_MAX)
+        return score - ply;
+    if (score <= -VALUE_MATE_IN_MAX)
+        return score + ply;
+    return score;
+}
+
+static TTEntry* ttEntry(uint64_t key)
+{
+    return &TranspositionTable[(size_t)(key & TT_MASK)];
+}
+
+static Move ttBestMove(uint64_t key)
+{
+    TTEntry* e = ttEntry(key);
+    return e->flag != TT_NONE && e->key == key ? e->bestMove : NO_MOVE;
+}
+
+static bool
+ttProbe(uint64_t key, int depth, int ply, int alpha, int beta, int* scoreOut, Move* moveOut)
+{
+    TTEntry* e = ttEntry(key);
+    if (e->flag == TT_NONE || e->key != key)
+        return false;
+
+    *moveOut = e->bestMove;
+    if (e->depth < depth)
+        return false;
+
+    int score = scoreFromTT(e->score, ply);
+    if (e->flag == TT_EXACT || (e->flag == TT_LOWER && score >= beta) ||
+        (e->flag == TT_UPPER && score <= alpha))
+    {
+        *scoreOut = score;
+        return true;
+    }
+    return false;
+}
+
+static void ttStore(uint64_t key, int depth, int ply, int score, uint8_t flag, Move bestMove)
+{
+    TTEntry* e = ttEntry(key);
+    if (e->flag != TT_NONE && e->key == key && e->depth > depth)
+        return;
+
+    e->key = key;
+    e->score = scoreToTT(score, ply);
+    e->depth = depth;
+    e->bestMove = bestMove;
+    e->flag = flag;
+}
 
 // clang-format off
 static const int PawnPst[SQUARE_NB] = {
@@ -157,8 +248,11 @@ static bool shouldStop(SearchContext* ctx)
     return ctx->stopped;
 }
 
-static int moveScore(const Board* b, Move m)
+static int moveScore(const Board* b, Move m, Move ttMove)
 {
+    if (m == ttMove)
+        return 100000000;
+
     int score = 0;
     int attacker = b->squares[moveFrom(m)];
     int victim = b->squares[moveTo(m)];
@@ -166,20 +260,24 @@ static int moveScore(const Board* b, Move m)
     if (moveType(m) == EN_PASSANT)
         victim = makePiece(!b->turn, PAWN);
     if (victim != EMPTY)
-        score += 10000 + PieceValue[pieceType(victim)] - PieceValue[pieceType(attacker)];
+    {
+        int victimValue = PieceValue[pieceType(victim)];
+        int attackerValue = PieceValue[pieceType(attacker)];
+        score += 100000 + see(b, m) * 16 + victimValue - attackerValue;
+    }
     if (moveType(m) == PROMOTION)
-        score += 9000 + PieceValue[movePromoPiece(m)];
+        score += 90000 + PieceValue[movePromoPiece(m)] + see(b, m) * 16;
     if (moveType(m) == CASTLING)
         score += 50;
 
     return score;
 }
 
-static void orderMoves(const Board* b, Move* moves, int count)
+static void orderMoves(const Board* b, Move* moves, int count, Move ttMove)
 {
     int scores[MAX_MOVES];
     for (int i = 0; i < count; i++)
-        scores[i] = moveScore(b, moves[i]);
+        scores[i] = moveScore(b, moves[i], ttMove);
 
     for (int i = 1; i < count; i++)
     {
@@ -196,27 +294,41 @@ static void orderMoves(const Board* b, Move* moves, int count)
     }
 }
 
-static int quiesce(Board* b, int alpha, int beta, SearchContext* ctx)
+static int quiesce(Board* b, int ply, int alpha, int beta, SearchContext* ctx)
 {
     ctx->nodes++;
-    int standPat = staticEval(b);
-    if (shouldStop(ctx) || standPat >= beta)
-        return standPat;
-    if (standPat > alpha)
-        alpha = standPat;
+    if (shouldStop(ctx) || ply >= MAX_PLY)
+        return staticEval(b);
+
+    bool inCheck = boardInCheck(b);
+    int  best = -VALUE_INF;
+
+    if (!inCheck)
+    {
+        int standPat = staticEval(b);
+        if (standPat >= beta)
+            return standPat;
+        if (standPat > alpha)
+            alpha = standPat;
+        best = standPat;
+    }
 
     Move moves[MAX_MOVES];
-    int  n = generateNoisyMoves(b, moves);
-    orderMoves(b, moves, n);
+    int  n = inCheck ? generateAllMoves(b, moves) : generateNoisyMoves(b, moves);
+    orderMoves(b, moves, n, ttBestMove(b->hash));
 
-    int best = standPat;
+    bool foundLegal = false;
     for (int i = 0; i < n; i++)
     {
+        if (!inCheck && moveIsCapture(b, moves[i]) && see(b, moves[i]) < 0)
+            continue;
+
         Undo u;
         if (!applyIfLegal(b, moves[i], &u))
             continue;
 
-        int score = -quiesce(b, -beta, -alpha, ctx);
+        foundLegal = true;
+        int score = -quiesce(b, ply + 1, -beta, -alpha, ctx);
         revertMove(b, moves[i], &u);
 
         if (ctx->stopped)
@@ -228,6 +340,9 @@ static int quiesce(Board* b, int alpha, int beta, SearchContext* ctx)
         if (alpha >= beta)
             break;
     }
+
+    if (inCheck && !foundLegal)
+        return -VALUE_MATE + ply;
 
     return best;
 }
@@ -241,15 +356,24 @@ static int negamax(Board* b, int depth, int ply, int alpha, int beta, SearchCont
     if (boardIsDraw(b))
         return VALUE_DRAW;
     bool inCheck = boardInCheck(b);
-    if ((depth <= 0 && !inCheck) || ply >= MAX_PLY)
-        return quiesce(b, alpha, beta, ctx);
+    if (ply >= MAX_PLY)
+        return staticEval(b);
+    if (depth <= 0 && !inCheck)
+        return quiesce(b, ply, alpha, beta, ctx);
+
+    int  alphaOrig = alpha;
+    int  ttScore = VALUE_NONE;
+    Move ttMove = NO_MOVE;
+    if (ttProbe(b->hash, depth, ply, alpha, beta, &ttScore, &ttMove))
+        return ttScore;
 
     Move moves[MAX_MOVES];
     int  n = generateAllMoves(b, moves);
-    orderMoves(b, moves, n);
+    orderMoves(b, moves, n, ttMove);
 
     bool foundLegal = false;
     int  best = -VALUE_INF;
+    Move bestMove = NO_MOVE;
 
     for (int i = 0; i < n; i++)
     {
@@ -264,7 +388,10 @@ static int negamax(Board* b, int depth, int ply, int alpha, int beta, SearchCont
         if (ctx->stopped)
             return score;
         if (score > best)
+        {
             best = score;
+            bestMove = moves[i];
+        }
         if (score > alpha)
             alpha = score;
         if (alpha >= beta)
@@ -272,7 +399,18 @@ static int negamax(Board* b, int depth, int ply, int alpha, int beta, SearchCont
     }
 
     if (!foundLegal)
-        return inCheck ? -VALUE_MATE + ply : VALUE_DRAW;
+    {
+        int score = inCheck ? -VALUE_MATE + ply : VALUE_DRAW;
+        ttStore(b->hash, depth, ply, score, TT_EXACT, NO_MOVE);
+        return score;
+    }
+
+    uint8_t flag = TT_EXACT;
+    if (best <= alphaOrig)
+        flag = TT_UPPER;
+    else if (best >= beta)
+        flag = TT_LOWER;
+    ttStore(b->hash, depth, ply, best, flag, bestMove);
 
     return best;
 }
@@ -287,7 +425,7 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
 {
     Move moves[MAX_MOVES];
     int  n = generateAllMoves(b, moves);
-    orderMoves(b, moves, n);
+    orderMoves(b, moves, n, ttBestMove(b->hash));
 
     bool foundLegal = false;
     int  rootBestScore = -VALUE_INF;
@@ -319,7 +457,19 @@ static bool searchRoot(Board* b, int depth, SearchContext* ctx, Move* bestMove, 
 
     *bestMove = rootBestMove;
     *bestScore = foundLegal ? rootBestScore : (boardInCheck(b) ? -VALUE_MATE : VALUE_DRAW);
+    if (foundLegal && !ctx->stopped)
+        ttStore(b->hash, depth, 0, rootBestScore, TT_EXACT, rootBestMove);
     return foundLegal;
+}
+
+static void basicSearchInit(void)
+{
+    clearTranspositionTable();
+}
+
+static void basicSearchNewGame(void)
+{
+    clearTranspositionTable();
 }
 
 static void basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchResult* result)
@@ -370,6 +520,8 @@ static void basicSearchChooseMove(Board* b, const SearchLimits* limits, SearchRe
 const Algorithm BasicSearchAlgorithm = {
     .name = "basic_search",
     .description = "alpha-beta search with quiescence and piece-square evaluation",
+    .init = basicSearchInit,
+    .newGame = basicSearchNewGame,
     .evaluate = staticEval,
     .chooseMove = basicSearchChooseMove,
 };
